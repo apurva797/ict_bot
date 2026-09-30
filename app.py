@@ -14,10 +14,11 @@ from demo_backtest import run_backtest, run_ict_backtest
 from demo_data import MarketDataError, MarketDataResult, fetch_market_data
 from demo_paper import advance_paper_account, advance_ict_paper_account
 from demo_safety import DEMO_MODE, LIVE_ORDERS_ENABLED, SafetyError, assert_demo_mode, ict_entry_gate
-from demo_strategy import EXAMPLES, StrategyError, generate_strategy_code, parse_strategy, parse_strategy_json, validate_strategy
+from demo_strategy import EXAMPLES, StrategyError, generate_strategy_code, interpret_strategy, parse_strategy_json, summarize_strategy, validate_strategy
 from platform_strategies import strategy_registry
 from charting import render_ohlcv_chart
 from portfolio import portfolio_snapshot
+from voice_strategy import render_voice_strategy_controls
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("ict_demo")
@@ -40,6 +41,9 @@ st.title("AI Algo Trading Demo")
 st.write("Describe a trading strategy in plain English. Gemini can interpret it into editable structured rules; the deterministic strategy engine validates, backtests, and paper trades those rules.")
 st.error("DEMO MODE: ON   ·   LIVE ORDERS: DISABLED\n\nPaper trading only. Not investment advice.")
 st.caption("Natural language → restricted strategy rules → backtest → paper trading. No real money or broker order access.")
+# Reserve one stable location for the chart so strategy-panel reruns do not
+# mount it at a different Streamlit delta path.
+chart_slot = st.container()
 
 
 @st.cache_data(ttl=60, show_spinner=False)
@@ -51,7 +55,12 @@ def show_market_data_status(result: MarketDataResult) -> None:
     st.caption(f"Data source: {result.source} · {len(result.frame)} finalized candles · UTC")
     if result.used_fallback:
         st.info("Using backup data source")
-    render_ohlcv_chart(result.frame.tail(400), title=f"{symbol} · {timeframe}")
+    st.session_state.chart_snapshot = {
+        "frame": result.frame.tail(400).copy(),
+        "symbol": symbol,
+        "timeframe": timeframe,
+        "source": result.source,
+    }
 
 
 def show_additional_metrics(metrics):
@@ -101,7 +110,8 @@ with st.sidebar:
     capital = st.number_input("Starting capital (simulation)", min_value=1000, max_value=1000000, value=10000, step=1000)
     st.caption("Fixed safety limits: 1% max risk · 2.0 minimum R:R · 1x max leverage · 30 minute cooldown")
 
-strategy_choice = st.radio("Strategy", ["AI Strategy", "Existing ICT Strategy", "Quant Strategy"], horizontal=True)
+strategy_choice = st.radio("Strategy", ["AI Strategy", "Existing ICT Strategy", "Quant Strategy"],
+                            horizontal=True, key="strategy_choice")
 
 with st.expander("Strategy library · built-in plugins"):
     st.caption("Session-only strategy catalog. User accounts and persistent cloud storage are not configured in this public demo.")
@@ -111,7 +121,8 @@ with st.expander("Strategy library · built-in plugins"):
         st.markdown(f"**{item['name']}** · `{item['market']} {item['timeframe']}` · v{item['version']} · saved {item['saved_at']}")
 
 if strategy_choice == "AI Strategy":
-    st.subheader("1 · Describe a strategy")
+    st.subheader("1 · Describe or speak a strategy")
+    st.caption("Use everyday English, Hindi, or Hinglish. Voice works in browsers that support microphone speech recognition.")
     if "strategy_text" not in st.session_state:
         st.session_state.strategy_text = ""
     selected_example = st.session_state.pop("_selected_example", None)
@@ -120,6 +131,7 @@ if strategy_choice == "AI Strategy":
         st.session_state.strategy_text = example
         st.session_state._selected_example = example
         st.session_state.generated_strategy = None
+        st.session_state.strategy_interpretation = None
         st.session_state.strategy_error = None
         st.session_state.pop("strategy_rules_json", None)
         st.session_state.pop("generated_code", None)
@@ -127,29 +139,90 @@ if strategy_choice == "AI Strategy":
     cols = st.columns(3)
     for i, example in enumerate(EXAMPLES):
         cols[i].button(f"Example {i + 1}", width="stretch", on_click=select_example, args=(example,))
+    voice_language = st.selectbox(
+        "Voice language", ["Hinglish / Indian English", "Hindi", "English"],
+        format_func=lambda value: value,
+        key="strategy_voice_language",
+    )
+    voice_language_code = {
+        "Hinglish / Indian English": "en-IN", "Hindi": "hi-IN", "English": "en-IN",
+    }[voice_language]
+    voice_reply = st.checkbox("Speak clarification and confirmation", key="strategy_voice_reply")
+    prior_interpretation = st.session_state.get("strategy_interpretation")
+    voice_prompt = ""
+    if voice_reply and prior_interpretation:
+        voice_prompt = prior_interpretation.clarification or prior_interpretation.summary
+    transcript, voice_status = render_voice_strategy_controls(voice_language_code, voice_prompt)
+    if transcript and transcript != st.session_state.get("last_strategy_transcript"):
+        st.session_state.strategy_text = transcript
+        st.session_state.last_strategy_transcript = transcript
+        st.session_state.pop("generated_strategy", None)
+        st.session_state.strategy_interpretation = None
+        st.session_state.strategy_error = None
+    if voice_status:
+        st.caption(voice_status)
     text = st.text_area("Plain English strategy", key="strategy_text", max_chars=500, height=90,
-                        placeholder="Example: Buy when RSI(14) is below 30 and exit when RSI(14) goes above 70.")
-    gen_col, bt_col, paper_col = st.columns([1, 1, 1])
-    generate = gen_col.button("Generate structured rules", type="primary", width="stretch")
-    backtest = bt_col.button("Backtest", width="stretch")
-    paper_run = paper_col.button("Run paper trading", width="stretch")
+                        placeholder="Try: BTC me EMA 20 50 ko cross kare to buy; RSI 30 ke neeche buy; previous high break ho to buy.")
+    generate = st.button("Generate strategy", type="primary", width="stretch")
+    backtest = False
+    paper_run = False
 
-    if generate or selected_example or ((backtest or paper_run) and not st.session_state.get("generated_strategy")):
+    if generate or selected_example:
         try:
-            st.session_state.generated_strategy = parse_strategy(selected_example or text)
+            interpreted = interpret_strategy(selected_example or text)
+            st.session_state.strategy_interpretation = interpreted
+            st.session_state.interpreted_strategy_text = selected_example or text
+            st.session_state.generated_strategy = interpreted.specification
             st.session_state.strategy_error = None
-            if selected_example:
-                backtest = True
-        except StrategyError as exc:
-            LOGGER.info("Strategy validation rejected input: %s", exc)
+            if interpreted.validation_message:
+                st.session_state.strategy_error = interpreted.validation_message
+        except Exception as exc:
+            LOGGER.exception("Strategy interpretation failed")
             st.session_state.generated_strategy = None
-            st.session_state.strategy_error = str(exc)
+            st.session_state.strategy_error = "I couldn't finish interpreting that strategy. Try adding the entry trigger in everyday language."
+        if voice_reply:
+            # Re-render the keyed speech component with the newly prepared
+            # clarification/confirmation so it speaks immediately.
+            st.rerun()
 
     strategy = st.session_state.get("generated_strategy")
-    if st.session_state.get("strategy_error"):
+    interpretation = st.session_state.get("strategy_interpretation")
+    interpretation_stale = bool(
+        interpretation and st.session_state.get("interpreted_strategy_text") is not None
+        and text.strip() != st.session_state.interpreted_strategy_text.strip()
+    )
+    if interpretation_stale:
+        strategy = None
+        interpretation = None
+        st.session_state.strategy_error = None
+        st.info("The description changed. Generate strategy again to refresh and validate it before running.")
+    if st.session_state.get("strategy_error") and not (interpretation and interpretation.validation_message):
         st.warning(st.session_state.strategy_error)
+    if interpretation and interpretation.clarification:
+        st.info(interpretation.clarification)
+        if interpretation.suggestions:
+            st.caption("Helpful confirmations: " + " · ".join(interpretation.suggestions))
+        if "Use the complete existing ICT strategy" in interpretation.suggestions:
+            st.button("Open Existing ICT Strategy", key="open_ict_from_builder",
+                      on_click=lambda: st.session_state.update({"strategy_choice": "Existing ICT Strategy"}))
+        else:
+            st.caption("Add your answer to the strategy description, then choose Generate strategy.")
+    if interpretation and interpretation.draft:
+        candidate = interpretation.draft
+        st.subheader("Strategy confirmation")
+        st.markdown(f"**Strategy understood:** {interpretation.summary}")
+        if interpretation.validation_message:
+            st.error("Safety validation: " + interpretation.validation_message)
+        confirmation_cols = st.columns(4)
+        confirmation_cols[0].metric("Risk", f"{candidate.get('risk_fraction', 0.01) * 100:g}%")
+        confirmation_cols[1].metric("Target", f"{candidate.get('rr', 2.0):g}R")
+        confirmation_cols[2].metric("Session", "24H")
+        confirmation_cols[3].metric("Mode", "Paper Trading")
+        st.caption("The fixed demo limit remains 1% risk, minimum 2R, maximum 1x leverage. No live orders.")
     if strategy:
-        st.subheader("2 · Parsed strategy")
+        st.subheader("Validated strategy rules")
+        strategy_symbol = interpretation.symbol if interpretation and interpretation.symbol else symbol
+        strategy_timeframe = interpretation.timeframe if interpretation and interpretation.timeframe else timeframe
         strategy_name = st.text_input("Strategy name", value=st.session_state.get("strategy_name", "My custom strategy"), key="strategy_name")
         encoded_rules = json.dumps(strategy, indent=2)
         if st.session_state.get("strategy_rules_source") != encoded_rules:
@@ -157,14 +230,24 @@ if strategy_choice == "AI Strategy":
             st.session_state.strategy_rules_source = encoded_rules
         edited_rules = st.text_area("Review and edit the strategy rules (JSON)", key="strategy_rules_json", height=190)
         edit_col, code_col, save_col = st.columns(3)
-        apply_edits = edit_col.button("Validate edited rules", width="stretch")
+        apply_edits = edit_col.button("Validate", width="stretch")
         make_code = code_col.button("Generate code preview", width="stretch")
         save_version = save_col.button("Save strategy version", width="stretch")
+        action_cols = st.columns(3)
+        backtest = action_cols[0].button("Backtest", type="primary", width="stretch")
+        paper_run = action_cols[1].button("Paper Trade", width="stretch")
+        action_cols[2].button("Edit", width="stretch", on_click=lambda: st.session_state.update({"generated_strategy": None, "strategy_interpretation": None, "strategy_error": None, "interpreted_strategy_text": None}))
         if apply_edits:
             try:
                 strategy = parse_strategy_json(edited_rules)
                 st.session_state.generated_strategy = strategy
                 st.session_state.strategy_rules_source = json.dumps(strategy, indent=2)
+                if interpretation:
+                    interpretation.specification = strategy
+                    interpretation.draft = strategy
+                    interpretation.summary = summarize_strategy(strategy, strategy_symbol, strategy_timeframe)
+                    interpretation.clarification = None
+                    interpretation.validation_message = None
                 st.success("Edited rules validated. They are ready for backtest or paper trading.")
             except StrategyError as exc:
                 st.warning(str(exc))
@@ -178,10 +261,16 @@ if strategy_choice == "AI Strategy":
                 checked = parse_strategy_json(edited_rules)
                 st.session_state.generated_strategy = checked
                 st.session_state.strategy_rules_source = json.dumps(checked, indent=2)
+                if interpretation:
+                    interpretation.specification = checked
+                    interpretation.draft = checked
+                    interpretation.summary = summarize_strategy(checked, strategy_symbol, strategy_timeframe)
+                    interpretation.clarification = None
+                    interpretation.validation_message = None
                 versions = st.session_state.setdefault("strategy_library", [])
-                matching = [item for item in versions if item["name"] == strategy_name and item["market"] == symbol and item["timeframe"] == timeframe]
+                matching = [item for item in versions if item["name"] == strategy_name and item["market"] == strategy_symbol and item["timeframe"] == strategy_timeframe]
                 version = len(matching) + 1
-                versions.append({"name": strategy_name.strip() or "Custom strategy", "market": symbol, "timeframe": timeframe,
+                versions.append({"name": strategy_name.strip() or "Custom strategy", "market": strategy_symbol, "timeframe": strategy_timeframe,
                                  "version": version, "saved_at": datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M IST"), "spec": checked})
                 st.success(f"Saved {strategy_name} v{version} in this browser session.")
             except StrategyError as exc:
@@ -196,7 +285,7 @@ if strategy_choice == "AI Strategy":
                 st.session_state.generated_strategy = strategy
                 assert_demo_mode()
                 with st.spinner("Loading public candles and simulating..."):
-                    data_result = load_market_data(symbol, timeframe, 1000)
+                    data_result = load_market_data(strategy_symbol, strategy_timeframe, 1000)
                 show_market_data_status(data_result)
                 data = data_result.frame
                 if backtest:
@@ -215,9 +304,9 @@ if strategy_choice == "AI Strategy":
                     st.dataframe(trades, width="stretch", hide_index=True)
                     st.caption("Assumptions: signals use finalized candles; fills occur at the next candle open with 0.01% slippage and 0.04% fees. If stop and target fall within one candle, stop is assumed first. Open positions are marked to market and closed at the end of the sample.")
                 if paper_run:
-                    state = get_paper_account("custom.dsl", capital, symbol, timeframe)
-                    context = {"strategy_id": "custom.dsl", "strategy_version": "1.0.0", "market": symbol,
-                               "timeframe": timeframe, "data_source": data_result.source,
+                    state = get_paper_account("custom.dsl", capital, strategy_symbol, strategy_timeframe)
+                    context = {"strategy_id": "custom.dsl", "strategy_version": "1.0.0", "market": strategy_symbol,
+                               "timeframe": strategy_timeframe, "data_source": data_result.source,
                                "entry_rules": json.dumps(strategy["entry"], sort_keys=True),
                                "market_context": f"close={float(data.close.iloc[-1]):.8g}"}
                     result = advance_paper_account(data, strategy, state, journal_context=context)
@@ -366,6 +455,29 @@ else:
         except Exception:
             LOGGER.exception("Quant strategy operation failed")
             st.error("Quant strategy could not complete that operation. Please try again.")
+
+# Keep the same keyed chart mounted on every rerun after its first data load.
+# Changing symbol/timeframe takes effect when the user requests a data action;
+# the caption makes a previously loaded chart's identity explicit meanwhile.
+chart_snapshot = st.session_state.get("chart_snapshot")
+if chart_snapshot:
+    with chart_slot:
+        st.subheader("Market chart")
+        loaded_symbol = chart_snapshot["symbol"]
+        loaded_timeframe = chart_snapshot["timeframe"]
+        st.caption(f"{loaded_symbol} · {loaded_timeframe} · {chart_snapshot['source']} · finalized candles")
+        if (loaded_symbol, loaded_timeframe) != (symbol, timeframe):
+            st.caption("Showing the last loaded market; run a strategy action to load the selected market.")
+        if "chart_fit_request" not in st.session_state:
+            st.session_state.chart_fit_request = 0
+        if st.button("Fit chart", key="fit_market_chart"):
+            st.session_state.chart_fit_request += 1
+        render_ohlcv_chart(
+            chart_snapshot["frame"],
+            title=f"{loaded_symbol} · {loaded_timeframe}",
+            dataset_id=f"{loaded_symbol}|{loaded_timeframe}",
+            reset_id=st.session_state.chart_fit_request,
+        )
 
 paper_accounts = st.session_state.get("paper_accounts", {})
 if paper_accounts:

@@ -6,12 +6,15 @@ import os
 import re
 import time
 from collections import deque
+from dataclasses import dataclass, field
+from typing import TypedDict
 
 import pandas as pd
 import requests
 
 
-INDICATORS = {"price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR"}
+INDICATORS = {"price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR",
+              "VWAP", "previous_high", "previous_low"}
 OPERATORS = {">", "<", ">=", "<=", "==", "crosses_above", "crosses_below"}
 MAX_TEXT = 500
 _LLM_CALLS = deque()
@@ -19,6 +22,17 @@ _LLM_CALLS = deque()
 
 class StrategyError(ValueError):
     pass
+
+
+class StrategySpecification(TypedDict):
+    """Validated data-only contract consumed by the deterministic engines."""
+
+    side: str
+    entry: list[dict]
+    exit: list[dict]
+    risk_fraction: float
+    rr: float
+    leverage: float
 
 
 def parse_strategy_json(payload):
@@ -47,7 +61,7 @@ def _condition(indicator, operator, value=None, period=None, compare_to=None):
     return item
 
 
-def validate_strategy(obj):
+def validate_strategy(obj) -> StrategySpecification:
     if not isinstance(obj, dict) or set(obj) - {"side", "entry", "exit", "risk_fraction", "rr", "leverage"}:
         raise StrategyError("Strategy must be a JSON object with only supported fields.")
     side = obj.get("side", "BUY")
@@ -56,8 +70,9 @@ def validate_strategy(obj):
     normalized = {"side": side, "entry": [], "exit": []}
     for key in ("entry", "exit"):
         conditions = obj.get(key)
-        if not isinstance(conditions, list) or not conditions or len(conditions) > 8:
-            raise StrategyError(f"{key.title()} must contain 1 to 8 conditions.")
+        if (not isinstance(conditions, list) or len(conditions) > 8
+                or (key == "entry" and not conditions)):
+            raise StrategyError(f"{key.title()} must contain {('1 to 8' if key == 'entry' else '0 to 8')} conditions.")
         for raw in conditions:
             allowed = {"indicator", "period", "operator", "value", "compare_to"}
             if not isinstance(raw, dict) or not set(raw) <= allowed:
@@ -78,9 +93,16 @@ def validate_strategy(obj):
                 item["period"] = period
             compare = raw.get("compare_to")
             if compare is not None:
-                if operator not in {"crosses_above", "crosses_below"} or not isinstance(compare, dict) or set(compare) != {"indicator", "period"}:
-                    raise StrategyError("Indicator comparisons require a supported crossover pair.")
-                if compare["indicator"] not in {"SMA", "EMA", "MACD"} or not isinstance(compare["period"], int) or not 1 <= compare["period"] <= 200:
+                if not isinstance(compare, dict) or compare.get("indicator") not in INDICATORS:
+                    raise StrategyError("Indicator comparison must use a supported indicator.")
+                comparison_indicator = compare["indicator"]
+                needs_period = comparison_indicator in {"RSI", "SMA", "EMA", "MACD", "ATR", "percentage_change"}
+                expected_fields = {"indicator", "period"} if needs_period else {"indicator"}
+                if set(compare) != expected_fields:
+                    raise StrategyError("Indicator comparison is missing a valid period or has unsupported fields.")
+                if needs_period and (not isinstance(compare["period"], int)
+                                     or isinstance(compare["period"], bool)
+                                     or not 1 <= compare["period"] <= 200):
                     raise StrategyError("Unsupported comparison indicator or period.")
                 item["compare_to"] = compare
             else:
@@ -99,32 +121,299 @@ def validate_strategy(obj):
             raise StrategyError("Strategy rejected because requested risk/reward is below 2.0.")
         if field == "leverage" and (value <= 0 or value > maximum):
             raise StrategyError("Strategy rejected because requested leverage exceeds the 1x demo safety limit.")
+        normalized[field] = float(value)
     return normalized
 
 
+def _words_to_numbers(text):
+    replacements = {
+        r"\bone\s+point\s+five\b": "1.5", r"\bone\s+point\s+five\s+r\b": "1.5R",
+        r"\bone\s+and\s+a\s+half\b": "1.5", r"\bdedh\b": "1.5", r"\bsawa\s+ek\b": "1.25",
+        r"\bone\b": "1", r"\btwo\b": "2", r"\bthree\b": "3", r"\bfour\b": "4",
+        r"\bfive\b": "5", r"\bten\b": "10", r"\btwenty\b": "20", r"\bfifty\b": "50",
+        r"\bek\b": "1", r"\bdo\b": "2", r"\bteen\b": "3", r"\bchaar\b": "4",
+        r"\bpaanch\b": "5", r"\btees\b": "30", r"\bsaat\b": "7", r"\bpachaas\b": "50",
+    }
+    normalized = text.lower()
+    for pattern, value in replacements.items():
+        normalized = re.sub(pattern, value, normalized)
+    return normalized
+
+
+def _infer_side(text):
+    s = _words_to_numbers(text)
+    entry_text = re.split(r"\b(?:exit|close|take\s*profit|target)\b|निकाल", s, maxsplit=1)[0]
+    if re.search(r"\b(short|sell|bech(?:o|na)?|bearish|downtrend)\b|शॉर्ट|बेच|मंदी", entry_text):
+        return "SELL"
+    return "BUY"
+
+
 def _local_parse(text):
-    s = text.lower().strip()
-    if "rsi" in s:
-        period = int(re.search(r"rsi\s*\(?\s*(\d+)", s).group(1)) if re.search(r"rsi\s*\(?\s*(\d+)", s) else 14
-        entry = re.search(r"(?:below|under|<)\s*(\d+(?:\.\d+)?)", s)
-        exit_ = re.search(r"(?:above|over|>)\s*(\d+(?:\.\d+)?)", s)
-        if entry and exit_:
-            return {"side": "BUY", "entry": [_condition("RSI", "<", float(entry.group(1)), period)], "exit": [_condition("RSI", ">", float(exit_.group(1)), period)]}
-    if "ema" in s and "cross" in s:
-        periods = [int(left or right) for left, right in re.findall(r"(?:ema\s*(\d+)|(\d+)\s*ema)", s)]
-        if len(periods) >= 2:
-            fast, slow = periods[:2]
-            entry = [_condition("EMA", "crosses_above", period=fast, compare_to={"indicator": "EMA", "period": slow})]
-            rsi_filter = re.search(r"\brsi(?:\s*\(\s*(\d+)\s*\))?[\s\S]{0,35}?(?:above|over|>)\s*(\d+(?:\.\d+)?)", s)
-            if rsi_filter:
-                period = int(rsi_filter.group(1) or 14)
-                entry.append(_condition("RSI", ">", float(rsi_filter.group(2)), period))
-            return {"side": "BUY", "entry": entry, "exit": [_condition("EMA", "crosses_below", period=fast, compare_to={"indicator": "EMA", "period": slow})]}
-    dip = re.search(r"(\d+(?:\.\d+)?)\s*%.*dip", s)
-    gain = re.search(r"(\d+(?:\.\d+)?)\s*%.*gain", s)
-    if dip and gain:
-        return {"side": "BUY", "entry": [_condition("percentage_change", "<", -float(dip.group(1)), 1)], "exit": [_condition("percentage_change", ">=", float(gain.group(1)), 1)]}
-    raise StrategyError("Strategy could not be understood. Try a simpler condition or one of the examples.")
+    """Interpret common indicator strategies in English, Hindi and Hinglish."""
+    s = _words_to_numbers(text)
+    side = _infer_side(s)
+    entry = []
+    exit_ = []
+
+    # EMA/SMA fast/slow crossovers, including Hinglish "20 50 ko cross kare".
+    cross_match = re.search(r"\b(ema|sma)\b", s)
+    cross_periods = []
+    if cross_match and re.search(r"cross|crossover|crossunder|crosses|क्रॉस", s):
+        name = cross_match.group(1).upper()
+        explicit_periods = re.findall(r"(?:ema|sma)\s*(\d+)|(\d+)\s*(?:ema|sma)", s)
+        cross_periods = [int(left or right) for left, right in explicit_periods]
+        cross_periods = cross_periods[:2]
+        suffix = s[cross_match.end():]
+        if len(cross_periods) < 2:
+            cross_periods = [int(n) for n in re.findall(r"\d+", suffix)[:2]]
+        if len(cross_periods) >= 2:
+            fast, slow = cross_periods[:2]
+            entry_text = re.split(r"\b(?:exit|close|take\s*profit|target)\b|निकाल", s, maxsplit=1)[0]
+            explicit_entry_down = bool(re.search(r"cross(?:es)?\s*(?:below|down|under)|crossunder|neeche|down|नीचे", entry_text))
+            explicit_entry_up = bool(re.search(r"cross(?:es)?\s*(?:above|up|over)|crossover|upar|ऊपर", entry_text))
+            bearish = explicit_entry_down or (side == "SELL" and not explicit_entry_up)
+            op = "crosses_below" if bearish else "crosses_above"
+            entry.append(_condition(name, op, period=fast, compare_to={"indicator": name, "period": slow}))
+            if re.search(r"exit|close|reverse|ulta|nikal", s):
+                exit_text = re.split(r"\b(?:exit|close|take\s*profit|target)\b|निकाल", s, maxsplit=1)[-1]
+                explicit_exit_down = bool(re.search(r"cross(?:es)?\s*(?:below|down|under)|crossunder|neeche|down|नीचे", exit_text))
+                explicit_exit_up = bool(re.search(r"cross(?:es)?\s*(?:above|up|over)|crossover|upar|ऊपर", exit_text))
+                exit_op = ("crosses_below" if explicit_exit_down else "crosses_above" if explicit_exit_up
+                           else "crosses_above" if bearish else "crosses_below")
+                exit_.append(_condition(name, exit_op,
+                                         period=fast, compare_to={"indicator": name, "period": slow}))
+
+    # Price above/below an indicator, for example "price 200 EMA ke upar".
+    price_vs_average = re.search(
+        r"(?:price|close|daam|bhaav)\s*(\d+)?\s*(ema|sma)\s*(?:ke\s*)?(upar|above|over|neeche|below|under|ऊपर|नीचे)", s
+    ) or re.search(r"(?:price|close|daam|bhaav)\s*(?:is\s*)?(above|over|below|under)\s*(\d+)\s*(ema|sma)", s)
+    if price_vs_average:
+        if price_vs_average.group(2) in {"ema", "sma"}:
+            period, name, direction = price_vs_average.groups()
+        else:
+            direction, period, name = price_vs_average.groups()
+        operator = ">" if direction in {"upar", "above", "over", "ऊपर"} else "<"
+        entry.append(_condition("price", operator, compare_to={"indicator": name.upper(), "period": int(period or 20)}))
+
+    # RSI threshold and simple supported indicator levels.
+    threshold_pattern = re.compile(
+        r"\b(rsi|macd)\s*(?:\(\s*(\d+)\s*\))?\s*(?:(\d+(?:\.\d+)?)\s*(?:ke\s*)?(neeche|upar|below|under|above|over|के\s+नीचे|के\s+ऊपर|नीचे|ऊपर)|(?:(?:is|goes|go|moves?|ho)\s*)?(below|under|above|over|ke\s+neeche|ke\s+upar|के\s+नीचे|के\s+ऊपर|<|>)\s*(\d+(?:\.\d+)?))"
+    )
+    for match in threshold_pattern.finditer(s):
+        name, period, before_value, before_direction, after_direction, after_value = match.groups()
+        value = float(before_value or after_value)
+        direction = before_direction or after_direction
+        operator = "<" if direction in {"neeche", "below", "under", "ke neeche", "के नीचे", "नीचे", "<"} else ">"
+        condition = _condition(name.upper(), operator, value, int(period or (14 if name == "rsi" else 26)) if name == "rsi" else int(period or 26))
+        segment_before = s[max(0, match.start() - 45):match.start()]
+        (exit_ if re.search(r"exit|close|target|nikal|then sell|and sell|phir sell", segment_before) else entry).append(condition)
+
+    # Explicit previous-candle high/low breakouts.
+    if re.search(r"(previous|prev|pichhla|pichla|pichle)\s+(high|highs|swing high).{0,24}(break|breakout|cross|toot|upar|ऊपर)", s):
+        entry.append(_condition("price", "crosses_above", compare_to={"indicator": "previous_high"}))
+    if re.search(r"(previous|prev|pichhla|pichla|pichle)\s+(low|lows|swing low).{0,24}(break|breakdown|cross|toot|neeche|नीचे)", s):
+        entry.append(_condition("price", "crosses_below", compare_to={"indicator": "previous_low"}))
+
+    # VWAP relation is directly measurable and deterministic in the DSL.
+    if re.search(r"(?:price|close|daam|bhaav)\s*(?:is\s*)?(?:above|over|upar).*vwap", s) or re.search(r"vwap.*(?:below|under|neeche)", s):
+        entry.append(_condition("price", ">", compare_to={"indicator": "VWAP"}))
+    elif re.search(r"(?:price|close|daam|bhaav)\s*(?:is\s*)?(?:below|under|neeche).*vwap", s) or re.search(r"vwap.*(?:above|over|upar)", s):
+        entry.append(_condition("price", "<", compare_to={"indicator": "VWAP"}))
+
+    macd_cross = re.search(r"\bmacd\b.{0,25}?cross(?:es|ed)?\s*(above|over|up|below|under|down)\s*(?:the\s*)?(?:zero|0|line)", s)
+    if macd_cross:
+        operator = "crosses_above" if macd_cross.group(1) in {"above", "over", "up"} else "crosses_below"
+        condition = _condition("MACD", operator, 0, 26)
+        before = s[max(0, macd_cross.start() - 45):macd_cross.start()]
+        (exit_ if re.search(r"exit|close|target", before) else entry).append(condition)
+
+    dip = re.search(r"(\d+(?:\.\d+)?)\s*%.*(?:dip|drop|gir|fall)", s)
+    if dip:
+        entry.append(_condition("percentage_change", "<", -float(dip.group(1)), 1))
+    gain = re.search(r"(?:exit|gain|profit|badhe|upar).{0,25}(\d+(?:\.\d+)?)\s*%", s)
+    if gain:
+        exit_.append(_condition("percentage_change", ">=", float(gain.group(1)), 1))
+
+    if not entry:
+        raise StrategyError("No measurable entry condition was found.")
+    if re.search(r"exit|close|nikal", s) and not exit_:
+        raise StrategyError("An exit was requested, but its measurable condition was not found.")
+
+    draft = {"side": side, "entry": entry, "exit": exit_}
+    draft.update(_extract_preferences(text))
+    return draft
+
+
+@dataclass
+class StrategyInterpretation:
+    specification: StrategySpecification | None
+    draft: dict | None
+    summary: str
+    clarification: str | None = None
+    suggestions: list[str] = field(default_factory=list)
+    symbol: str | None = None
+    timeframe: str | None = None
+    validation_message: str | None = None
+
+
+def _extract_context(text):
+    s = _words_to_numbers(text)
+    symbol = None
+    for ticker, market in (("btc", "BTC/USDT"), ("bitcoin", "BTC/USDT"),
+                           ("eth", "ETH/USDT"), ("ethereum", "ETH/USDT"),
+                           ("sol", "SOL/USDT"), ("solana", "SOL/USDT")):
+        if re.search(rf"\b{ticker}\b", s):
+            symbol = market
+            break
+    match = re.search(r"\b(\d+)\s*(m|min|mins|minute|minutes|h|hr|hour|hours|मिनट|घंटे?)\b", s)
+    timeframe = None
+    if match:
+        timeframe = f"{int(match.group(1))}{'h' if match.group(2).startswith(('h', 'hr', 'hour', 'घंट')) else 'm'}"
+    return symbol, timeframe
+
+
+def _extract_preferences(text):
+    s = _words_to_numbers(text)
+    preferences = {}
+    risk = re.search(r"(\d+(?:\.\d+)?)\s*(?:%|percent|per cent|pratishat|प्रतिशत)\s*(?:risk|riks|जोखिम|रिस्क)?", s)
+    if risk and re.search(r"risk|riks|risk fraction|जोखिम|रिस्क", s[max(0, risk.start() - 18):risk.end() + 8]):
+        preferences["risk_fraction"] = float(risk.group(1)) / 100
+    rr = re.search(r"(\d+(?:\.\d+)?)\s*(?:r:r|rr\b|r\b|risk\s*[:/]\s*reward|risk reward)", s)
+    if rr:
+        preferences["rr"] = float(rr.group(1))
+    else:
+        rr = re.search(r"(?:r:r|rr\b|risk\s*[:/]\s*reward|risk reward)\s*(?:=|is|of)?\s*(\d+(?:\.\d+)?)\s*r?\b", s)
+        if rr:
+            preferences["rr"] = float(rr.group(1))
+    leverage = re.search(r"(\d+(?:\.\d+)?)\s*x\s*(?:leverage|lev)", s)
+    if leverage:
+        preferences["leverage"] = float(leverage.group(1))
+    return preferences
+
+
+def _summarize_spec(spec, symbol=None, timeframe=None):
+    market = symbol or "Selected market"
+    interval = timeframe or "selected timeframe"
+    side = "Long" if spec["side"] == "BUY" else "Short"
+    parts = []
+    for condition in spec["entry"]:
+        indicator = condition["indicator"]
+        if indicator == "price" and condition.get("compare_to"):
+            right = condition["compare_to"]["indicator"].replace("_", " ")
+            right_period = condition["compare_to"].get("period")
+            right = f"{right_period} {right}" if right_period else right.title()
+            parts.append(f"Price {condition['operator']} {right}")
+        elif "compare_to" in condition:
+            other = condition["compare_to"]
+            parts.append(f"{condition.get('period', '')} {indicator} crossover vs {other.get('period', '')} {other['indicator']}")
+        else:
+            parts.append(f"{indicator} {condition['operator']} {condition.get('value', '')}")
+    return f"{market} {interval} — {' + '.join(parts)} → {side}"
+
+
+def summarize_strategy(spec, symbol=None, timeframe=None):
+    """Public human-readable summary for an already validated rule set."""
+    return _summarize_spec(spec, symbol, timeframe)
+
+
+def interpret_strategy(text):
+    """Return a validated spec or an actionable clarification for natural text."""
+    if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
+        return StrategyInterpretation(None, None, "", "Describe the setup in 500 characters or fewer.")
+    symbol, timeframe = _extract_context(text)
+    preferences = _extract_preferences(text)
+    try:
+        draft = _local_parse(text)
+    except StrategyError as local_error:
+        draft = None
+        # Use the configured server-side model for patterns outside the local vocabulary.
+        if os.getenv("GEMINI_API_KEY", "").strip() or os.getenv("OPENAI_API_KEY", "").strip():
+            try:
+                draft = parse_strategy(text)
+                if draft is not None:
+                    draft.update(preferences)
+            except StrategyError:
+                pass
+        if draft is None:
+            lowered = text.lower()
+            if re.search(r"liquidity|sweep|fvg|fair value gap|order block|\bmss\b|market structure", lowered):
+                side = _infer_side(text)
+                draft = {"side": side, "entry": [], "exit": [], **preferences} if preferences else None
+                limitations = []
+                if preferences.get("rr", 2.0) < 2.0:
+                    limitations.append("The existing ICT engine enforces a minimum 2R target.")
+                if re.search(r"\b(sl|stop\s*loss|stoploss)\b", lowered):
+                    limitations.append("The existing ICT engine uses its fixed 1% price-risk stop, not a custom swing stop.")
+                limitation = " ".join(limitations) or None
+                return StrategyInterpretation(
+                    None, draft, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — ICT setup → {('Short' if side == 'SELL' else 'Long')}",
+                    "I recognize this as an ICT price-action setup. Which confirmation should the existing ICT engine wait for?",
+                    ["Bearish/bullish candle confirmation", "Market structure shift", "Use the complete existing ICT strategy"],
+                    symbol, timeframe, limitation,
+                )
+            if re.search(r"\brsi\b", lowered):
+                return StrategyInterpretation(None, None, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — RSI setup",
+                                              "What RSI level should trigger the entry, and should it be above or below that level?",
+                                              ["Below 30", "Above 70", "Another level"], symbol, timeframe)
+            if re.search(r"\b(ema|sma)\b", lowered) and re.search(r"cross|crossover|crossunder", lowered):
+                return StrategyInterpretation(None, None, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — moving-average crossover",
+                                              "Which fast and slow average periods should cross, and in which direction?",
+                                              ["20 crosses above 50", "20 crosses below 50", "Another pair"], symbol, timeframe)
+            if re.search(r"\bmacd\b", lowered):
+                return StrategyInterpretation(None, None, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — MACD setup",
+                                              "Should MACD cross the zero line, or should it cross its signal line?",
+                                              ["Cross above zero", "Cross below zero", "MACD/signal crossover"], symbol, timeframe)
+            if re.search(r"support|resistance|\btrend\b|breakout|breakdown", lowered):
+                return StrategyInterpretation(None, None, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — price-action setup",
+                                              "What exact price level or measurable trend rule should confirm this setup?",
+                                              ["Previous candle high/low break", "Price above/below a moving average", "Another price level"], symbol, timeframe)
+            if preferences:
+                side = "SELL" if re.search(r"\b(short|sell|bech|bearish)\b|शॉर्ट|बेच|मंदी", lowered) else "BUY"
+                draft = {"side": side, "entry": [], "exit": [], **preferences}
+                return StrategyInterpretation(
+                    None, draft, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — risk settings received",
+                    "What measurable entry condition should trigger this trade?",
+                    ["RSI threshold", "EMA crossover", "Previous high/low breakout"], symbol, timeframe,
+                )
+            if re.search(r"\b(short|sell|long|buy|becho|kharid)\b", lowered):
+                return StrategyInterpretation(None, None, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — direction understood",
+                                              "What measurable entry condition should trigger this trade?",
+                                              ["RSI threshold", "EMA crossover", "Previous high/low breakout"], symbol, timeframe)
+            return StrategyInterpretation(None, None, "", "Which indicator or price event should trigger the entry?",
+                                          ["RSI threshold", "EMA crossover", "Previous high/low breakout"], symbol, timeframe)
+
+    lowered = text.lower()
+    if len(draft.get("entry", [])) > 1 and re.search(r"\bor\b|या|अथवा", lowered):
+        return StrategyInterpretation(
+            None, draft, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — combined setup",
+            "Should either entry condition trigger a trade, or must both be true? The custom strategy engine currently combines conditions with AND.",
+            ["Both conditions must be true", "Either condition can trigger"], symbol, timeframe,
+        )
+    if re.search(r"liquidity|sweep|fvg|fair value gap|order block|\bmss\b|market structure|bearish reversal|bullish reversal|displacement", lowered):
+        limitations = []
+        if draft.get("rr", 2.0) < 2.0:
+            limitations.append("The existing ICT engine enforces a minimum 2R target.")
+        if re.search(r"\b(sl|stop\s*loss|stoploss)\b", lowered):
+            limitations.append("The existing ICT engine uses its fixed 1% price-risk stop, not a custom swing stop.")
+        limitation = " ".join(limitations) or None
+        return StrategyInterpretation(
+            None, draft, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — ICT setup",
+            "I recognize an ICT price-action setup. Should I use the existing ICT engine's full confirmation rules?",
+            ["Use the complete existing ICT strategy", "Add a measurable indicator condition"], symbol, timeframe, limitation,
+        )
+
+    summary = _summarize_spec(draft, symbol, timeframe)
+    if re.search(r"\b(sl|stop\s*loss|stoploss)\b", text.lower()):
+        message = "A custom stop-loss price is not supported by the deterministic demo engine; it keeps its fixed 1% price-risk stop."
+        return StrategyInterpretation(None, draft, summary, message,
+                                      ["Use the fixed demo stop", "Describe an indicator exit instead"], symbol, timeframe,
+                                      validation_message=message)
+    try:
+        specification = validate_strategy(draft)
+        return StrategyInterpretation(specification, draft, summary, symbol=symbol, timeframe=timeframe)
+    except StrategyError as exc:
+        return StrategyInterpretation(None, draft, summary, str(exc), symbol=symbol,
+                                      timeframe=timeframe, validation_message=str(exc))
 
 
 def parse_strategy(text):
@@ -165,7 +454,7 @@ def parse_strategy(text):
             headers={"Authorization": f"Bearer {key}"},
             json={"model": os.getenv("OPENAI_MODEL", "gpt-4o-mini"), "temperature": 0,
                   "response_format": {"type": "json_object"},
-                  "messages": [{"role": "system", "content": "Convert the request to a restricted trading condition JSON object only. Never return code or risk settings. Indicators: price, percentage_change, RSI, SMA, EMA, MACD, ATR. Operators: >, <, >=, <=, ==, crosses_above, crosses_below. Each entry/exit condition has indicator, period where required, operator, and numeric value; crossovers may use compare_to {indicator,period}."}, {"role": "user", "content": text}], "max_tokens": 500},
+                  "messages": [{"role": "system", "content": "Interpret short natural-language trading requests, including Hindi and Hinglish. Return only a restricted strategy condition JSON object. Never return code or risk settings. Indicators: price, percentage_change, RSI, SMA, EMA, MACD, ATR, VWAP, previous_high, previous_low. Operators: >, <, >=, <=, ==, crosses_above, crosses_below. Each entry/exit condition has indicator, period where required, operator, and either a number or compare_to indicator. Do not invent unsupported ICT price-action rules; leave entry empty if clarification is needed."}, {"role": "user", "content": text}], "max_tokens": 500},
         )
         response.raise_for_status()
         content = response.json()["choices"][0]["message"]["content"]
@@ -226,6 +515,21 @@ def indicators(frame, spec):
     if name == "ATR":
         tr = pd.concat([frame.high - frame.low, (frame.high - close.shift()).abs(), (frame.low - close.shift()).abs()], axis=1).max(axis=1)
         return tr.rolling(period, min_periods=period).mean()
+    if name == "previous_high":
+        return frame.high.shift(1)
+    if name == "previous_low":
+        return frame.low.shift(1)
+    if name == "VWAP":
+        typical_price = (frame.high + frame.low + close) / 3
+        volume = frame.volume.fillna(0)
+        if isinstance(frame.index, pd.DatetimeIndex):
+            session = frame.index.tz_convert("UTC").normalize() if frame.index.tz else frame.index.normalize()
+            numerator = (typical_price * volume).groupby(session).cumsum()
+            denominator = volume.groupby(session).cumsum().replace(0, float("nan"))
+        else:
+            numerator = (typical_price * volume).cumsum()
+            denominator = volume.cumsum().replace(0, float("nan"))
+        return numerator / denominator
     raise StrategyError("Unsupported indicator.")
 
 
@@ -251,6 +555,8 @@ def condition_mask(frame, condition, entry_price=None):
 
 
 def evaluate_conditions(frame, conditions, entry_price=None):
+    if not conditions:
+        return pd.Series(False, index=frame.index, dtype=bool)
     masks = [condition_mask(frame, item, entry_price=entry_price).fillna(False) for item in conditions]
     return pd.concat(masks, axis=1).all(axis=1)
 

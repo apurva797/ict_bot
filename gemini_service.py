@@ -13,24 +13,24 @@ STRATEGY_RESPONSE_SCHEMA = {
     "properties": {
         "side": {"type": "string", "enum": ["BUY", "SELL"]},
         "entry": {"type": "array", "items": {"type": "object", "properties": {
-            "indicator": {"type": "string", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR"]},
+            "indicator": {"type": "string", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR", "VWAP", "previous_high", "previous_low"]},
             "period": {"type": "integer"},
             "operator": {"type": "string", "enum": [">", "<", ">=", "<=", "==", "crosses_above", "crosses_below"]},
             "value": {"type": "number"},
             "compare_to": {"type": "object", "properties": {
-                "indicator": {"type": "string", "enum": ["SMA", "EMA", "MACD"]},
+                "indicator": {"type": "string", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR", "VWAP", "previous_high", "previous_low"]},
                 "period": {"type": "integer"},
-            }, "required": ["indicator", "period"]},
+            }, "required": ["indicator"]},
         }, "required": ["indicator", "operator"]}},
         "exit": {"type": "array", "items": {"type": "object", "properties": {
-            "indicator": {"type": "string", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR"]},
+            "indicator": {"type": "string", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR", "VWAP", "previous_high", "previous_low"]},
             "period": {"type": "integer"},
             "operator": {"type": "string", "enum": [">", "<", ">=", "<=", "==", "crosses_above", "crosses_below"]},
             "value": {"type": "number"},
             "compare_to": {"type": "object", "properties": {
-                "indicator": {"type": "string", "enum": ["SMA", "EMA", "MACD"]},
+                "indicator": {"type": "string", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR", "VWAP", "previous_high", "previous_low"]},
                 "period": {"type": "integer"},
-            }, "required": ["indicator", "period"]},
+            }, "required": ["indicator"]},
         }, "required": ["indicator", "operator"]}},
     },
     "required": ["side", "entry", "exit"],
@@ -50,10 +50,11 @@ def generate_strategy_json(text: str) -> str:
         response = client.models.generate_content(
             model=os.getenv("GEMINI_MODEL", "gemini-3.8-flash"),
             contents=(
-                "Convert the user's request into only the provided restricted strategy schema. "
+                "Interpret the user's natural-language strategy; inputs may be short English, Hindi, Hinglish, "
+                "or mixed, and contain casual spelling. Return only the provided restricted strategy schema. "
                 "Do not invent price-action, news, session, or risk rules that the schema cannot express. "
-                "All entry and exit conditions in each list are combined with AND. If a material detail "
-                "is ambiguous or unsupported, return empty condition arrays so validation rejects it. "
+                "All entry and exit conditions in each list are combined with AND. Leave entry empty if a "
+                "required trigger is ambiguous or unsupported so the app can ask a clarification. "
                 "Use the default demo risk settings; do not return code. User request: " + text
             ),
             config=types.GenerateContentConfig(
