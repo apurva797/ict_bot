@@ -9,27 +9,27 @@ class GeminiServiceError(ValueError):
 
 
 STRATEGY_RESPONSE_SCHEMA = {
-    "type": "OBJECT",
+    "type": "object",
     "properties": {
-        "side": {"type": "STRING", "enum": ["BUY", "SELL"]},
-        "entry": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-            "indicator": {"type": "STRING", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR"]},
-            "period": {"type": "INTEGER"},
-            "operator": {"type": "STRING", "enum": [">", "<", ">=", "<=", "==", "crosses_above", "crosses_below"]},
-            "value": {"type": "NUMBER"},
-            "compare_to": {"type": "OBJECT", "properties": {
-                "indicator": {"type": "STRING", "enum": ["SMA", "EMA", "MACD"]},
-                "period": {"type": "INTEGER"},
+        "side": {"type": "string", "enum": ["BUY", "SELL"]},
+        "entry": {"type": "array", "items": {"type": "object", "properties": {
+            "indicator": {"type": "string", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR"]},
+            "period": {"type": "integer"},
+            "operator": {"type": "string", "enum": [">", "<", ">=", "<=", "==", "crosses_above", "crosses_below"]},
+            "value": {"type": "number"},
+            "compare_to": {"type": "object", "properties": {
+                "indicator": {"type": "string", "enum": ["SMA", "EMA", "MACD"]},
+                "period": {"type": "integer"},
             }, "required": ["indicator", "period"]},
         }, "required": ["indicator", "operator"]}},
-        "exit": {"type": "ARRAY", "items": {"type": "OBJECT", "properties": {
-            "indicator": {"type": "STRING", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR"]},
-            "period": {"type": "INTEGER"},
-            "operator": {"type": "STRING", "enum": [">", "<", ">=", "<=", "==", "crosses_above", "crosses_below"]},
-            "value": {"type": "NUMBER"},
-            "compare_to": {"type": "OBJECT", "properties": {
-                "indicator": {"type": "STRING", "enum": ["SMA", "EMA", "MACD"]},
-                "period": {"type": "INTEGER"},
+        "exit": {"type": "array", "items": {"type": "object", "properties": {
+            "indicator": {"type": "string", "enum": ["price", "percentage_change", "RSI", "SMA", "EMA", "MACD", "ATR"]},
+            "period": {"type": "integer"},
+            "operator": {"type": "string", "enum": [">", "<", ">=", "<=", "==", "crosses_above", "crosses_below"]},
+            "value": {"type": "number"},
+            "compare_to": {"type": "object", "properties": {
+                "indicator": {"type": "string", "enum": ["SMA", "EMA", "MACD"]},
+                "period": {"type": "integer"},
             }, "required": ["indicator", "period"]},
         }, "required": ["indicator", "operator"]}},
     },

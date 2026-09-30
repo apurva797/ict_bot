@@ -119,6 +119,35 @@ class MarketDataFallbackTests(unittest.TestCase):
         self.assertTrue(any("Bundled historical sample (not live)" in item.value for item in app.caption))
         self.assertTrue(any("DEMO MODE: ON" in item.value for item in app.error))
 
+    def test_quant_strategy_runs_through_streamlit_backtest_flow(self):
+        result = MarketDataResult(self.sample_frame(limit=500), "Bundled historical sample (not live)", True)
+        with patch("demo_data.fetch_market_data", return_value=result):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.radio[0].set_value("Quant Strategy").run()
+            app.button[1].click().run()
+        self.assertFalse(list(app.exception))
+        self.assertTrue(any("Quant backtest" in item.value for item in app.subheader))
+        self.assertIn("Using backup data source", [item.value for item in app.info])
+
+    def test_custom_strategy_review_code_and_version_workflow(self):
+        result = MarketDataResult(self.sample_frame(limit=500), "Bundled historical sample (not live)", True)
+        with patch("demo_data.fetch_market_data", return_value=result):
+            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            next(button for button in app.button if button.label == "Example 1").click().run()
+            rules = next(item for item in app.text_area if item.key == "strategy_rules_json")
+            rules.set_value(
+                '{"side":"BUY","entry":[{"indicator":"RSI","period":14,"operator":"<","value":25}],'
+                '"exit":[{"indicator":"RSI","period":14,"operator":">","value":70}]}'
+            ).run()
+            next(button for button in app.button if button.label == "Backtest").click().run()
+            self.assertEqual(app.session_state["generated_strategy"]["entry"][0]["value"], 25.0)
+            next(button for button in app.button if button.label == "Generate code preview").click().run()
+            self.assertIn("evaluate_strategy", app.session_state["generated_code"])
+            self.assertIn("exits = evaluate_conditions", app.session_state["generated_code"])
+            next(button for button in app.button if button.label == "Save strategy version").click().run()
+            self.assertEqual(app.session_state["strategy_library"][0]["version"], 1)
+        self.assertFalse(list(app.exception))
+
     def test_no_provider_failure_crashes_the_streamlit_ict_flow(self):
         with patch("demo_data._fetch_binance_ohlcv", side_effect=RuntimeError("blocked")), \
              patch("demo_data._fetch_coinbase_ohlcv", side_effect=RuntimeError("offline")), \

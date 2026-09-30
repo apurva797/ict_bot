@@ -50,7 +50,8 @@ def run_backtest(frame, strategy, starting_capital=10_000.0, fee_rate=0.0004, sl
                 fees = position["entry"] * position["quantity"] * fee_rate + exit_price * position["quantity"] * fee_rate
                 pnl = gross - fees
                 balance += pnl
-                trades.append(_trade(position, timestamp, exit_price, reason, gross, fees, pnl))
+                trades.append(_trade(position, timestamp, exit_price, reason, gross, fees, pnl,
+                                     position.get("entry_slippage_cost", 0.0) + abs(exit_price - raw_exit) * position["quantity"]))
                 position = None
                 last_closed = timestamp
             elif previous_exit:
@@ -59,7 +60,8 @@ def run_backtest(frame, strategy, starting_capital=10_000.0, fee_rate=0.0004, sl
                 fees = position["entry"] * position["quantity"] * fee_rate + exit_price * position["quantity"] * fee_rate
                 pnl = gross - fees
                 balance += pnl
-                trades.append(_trade(position, timestamp, exit_price, "Strategy exit", gross, fees, pnl))
+                trades.append(_trade(position, timestamp, exit_price, "Strategy exit", gross, fees, pnl,
+                                     position.get("entry_slippage_cost", 0.0) + abs(exit_price - float(candle.open)) * position["quantity"]))
                 position = None
                 last_closed = timestamp
 
@@ -80,6 +82,7 @@ def run_backtest(frame, strategy, starting_capital=10_000.0, fee_rate=0.0004, sl
                     if quantity > 0 and quantity * entry <= balance * 1.000001:
                         position = {"entry": entry, "stop": stop, "target": target, "quantity": quantity,
                                     "risk_amount": risk_amount, "opened_at": timestamp, "side": trade_side}
+                        position["entry_slippage_cost"] = abs(entry - float(candle.open)) * quantity
                         # Handle stop/target against the entry candle, with stop priority.
                         stop_hit = candle.low <= stop if trade_side == "LONG" else candle.high >= stop
                         target_hit = candle.high >= target if trade_side == "LONG" else candle.low <= target
@@ -91,7 +94,8 @@ def run_backtest(frame, strategy, starting_capital=10_000.0, fee_rate=0.0004, sl
                             fees = entry * quantity * fee_rate + exit_price * quantity * fee_rate
                             pnl = gross - fees
                             balance += pnl
-                            trades.append(_trade(position, timestamp, exit_price, reason, gross, fees, pnl))
+                            trades.append(_trade(position, timestamp, exit_price, reason, gross, fees, pnl,
+                                                 position["entry_slippage_cost"] + abs(exit_price - raw_exit) * quantity))
                             position = None
                             last_closed = timestamp
 
@@ -110,7 +114,8 @@ def run_backtest(frame, strategy, starting_capital=10_000.0, fee_rate=0.0004, sl
         fees = position["entry"] * position["quantity"] * fee_rate + exit_price * position["quantity"] * fee_rate
         pnl = gross - fees
         balance += pnl
-        trades.append(_trade(position, timestamp, exit_price, "End of data", gross, fees, pnl))
+        trades.append(_trade(position, timestamp, exit_price, "End of data", gross, fees, pnl,
+                             position.get("entry_slippage_cost", 0.0) + abs(exit_price - float(frame.close.iloc[-1])) * position["quantity"]))
         if equity:
             equity[-1]["equity"] = balance
 
@@ -118,6 +123,37 @@ def run_backtest(frame, strategy, starting_capital=10_000.0, fee_rate=0.0004, sl
     losses = sum(t["net_pnl"] < 0 for t in trades)
     gains = sum(t["net_pnl"] for t in trades if t["net_pnl"] > 0)
     loss_total = -sum(t["net_pnl"] for t in trades if t["net_pnl"] < 0)
+    gross_profit = sum(max(0.0, t["gross_pnl"]) for t in trades)
+    gross_loss = -sum(min(0.0, t["gross_pnl"]) for t in trades)
+    wins_list = [t["net_pnl"] for t in trades if t["net_pnl"] > 0]
+    losses_list = [t["net_pnl"] for t in trades if t["net_pnl"] < 0]
+    streak = max_wins = max_losses = 0
+    previous_outcome = None
+    for trade in trades:
+        outcome = "win" if trade["net_pnl"] > 0 else "loss" if trade["net_pnl"] < 0 else "flat"
+        streak = streak + 1 if outcome == previous_outcome else 1
+        if outcome == "win":
+            max_wins = max(max_wins, streak)
+        elif outcome == "loss":
+            max_losses = max(max_losses, streak)
+        previous_outcome = outcome
+    duration_minutes = []
+    for trade in trades:
+        try:
+            duration_minutes.append((trade["closed_at"] - trade["opened_at"]).total_seconds() / 60)
+        except (AttributeError, TypeError):
+            pass
+    bar_returns = pd.Series([point["equity"] for point in equity], dtype="float64").pct_change().dropna()
+    sharpe = sortino = None
+    if len(bar_returns) >= 2 and float(bar_returns.std(ddof=1)) > 0:
+        bar_intervals = index.to_series().diff().dropna().dt.total_seconds()
+        seconds_per_bar = float(bar_intervals.median()) if not bar_intervals.empty else 0.0
+        if seconds_per_bar > 0:
+            annualization = math.sqrt((365.25 * 24 * 60 * 60) / seconds_per_bar)
+            sharpe = float(bar_returns.mean() / bar_returns.std(ddof=1) * annualization)
+            downside = bar_returns[bar_returns < 0]
+            if len(downside) and float(downside.std(ddof=0)) > 0:
+                sortino = float(bar_returns.mean() / downside.std(ddof=0) * annualization)
     pnl = balance - starting_capital
     metrics = {
         "Starting capital": starting_capital, "Ending capital": balance,
@@ -127,8 +163,17 @@ def run_backtest(frame, strategy, starting_capital=10_000.0, fee_rate=0.0004, sl
         "Number of trades": len(trades), "Wins": wins, "Losses": losses,
         "Average trade": pnl / len(trades) if trades else 0.0,
         "Profit factor": gains / loss_total if loss_total else (float("inf") if gains else 0.0),
+        "Gross profit": gross_profit, "Gross loss": gross_loss,
+        "Expectancy": sum(t["net_pnl"] for t in trades) / len(trades) if trades else None,
+        "Average win": sum(wins_list) / len(wins_list) if wins_list else None,
+        "Average loss": sum(losses_list) / len(losses_list) if losses_list else None,
+        "Average R": sum(t["net_pnl"] / t["risk_amount"] for t in trades if t["risk_amount"] > 0) / len(trades) if trades else None,
+        "Maximum consecutive wins": max_wins, "Maximum consecutive losses": max_losses,
+        "Average trade duration minutes": sum(duration_minutes) / len(duration_minutes) if duration_minutes else None,
+        "Fees paid": sum(t["fees"] for t in trades), "Estimated slippage paid": sum(t.get("slippage_cost", 0.0) for t in trades),
+        "Sharpe ratio": sharpe, "Sortino ratio": sortino,
     }
-    trade_columns = ["side", "opened_at", "closed_at", "entry", "exit", "stop", "target", "quantity", "risk_amount", "reason", "gross_pnl", "fees", "net_pnl"]
+    trade_columns = ["side", "opened_at", "closed_at", "entry", "exit", "stop", "target", "quantity", "risk_amount", "reason", "gross_pnl", "fees", "slippage_cost", "net_pnl"]
     return metrics, pd.DataFrame(equity).set_index("time"), pd.DataFrame(trades, columns=trade_columns)
 
 
@@ -155,9 +200,9 @@ def run_ict_backtest(frame, starting_capital=10_000.0, news_blackout=False):
     return run_backtest(frame, strategy, starting_capital=starting_capital, signal_sides=signals)
 
 
-def _trade(position, closed_at, exit_price, reason, gross, fees, pnl):
+def _trade(position, closed_at, exit_price, reason, gross, fees, pnl, slippage_cost=0.0):
     return {"side": position["side"], "opened_at": position["opened_at"], "closed_at": closed_at,
             "entry": position["entry"], "exit": exit_price, "stop": position["stop"], "target": position["target"],
             "quantity": position["quantity"], "risk_amount": position["risk_amount"], "reason": reason,
-            "gross_pnl": gross, "fees": fees, "net_pnl": pnl}
+            "gross_pnl": gross, "fees": fees, "slippage_cost": slippage_cost, "net_pnl": pnl}
 

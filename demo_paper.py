@@ -4,7 +4,7 @@ from demo_safety import assert_demo_mode, validate_risk_controls
 from demo_strategy import evaluate_conditions
 
 
-def advance_paper_account(frame, strategy, state, signal_sides=None):
+def advance_paper_account(frame, strategy, state, signal_sides=None, journal_context=None):
     assert_demo_mode()
     validate_risk_controls(strategy.get("risk_fraction", 0.01), strategy.get("rr", 2), strategy.get("leverage", 1))
     if frame is None or len(frame) < 35:
@@ -18,6 +18,7 @@ def advance_paper_account(frame, strategy, state, signal_sides=None):
     if state["last_action"] == str(timestamp):
         return "No new candle yet; paper account unchanged."
     close = float(frame.close.iloc[-1])
+    state["last_mark"] = close
     msg = "No paper trade signal on the latest closed candle."
     position = state["position"]
     side = position["side"] if position else ("LONG" if strategy.get("side", "BUY") == "BUY" else "SHORT")
@@ -44,6 +45,8 @@ def advance_paper_account(frame, strategy, state, signal_sides=None):
             fees = (position["entry"] + close) * position["quantity"] * 0.0004
             trade = {"side": side, "entry": position["entry"], "exit": close, "quantity": position["quantity"], "reason": reason,
                      "gross_pnl": gross, "fees": fees, "net_pnl": gross - fees, "opened_at": position["opened_at"], "closed_at": str(timestamp)}
+            trade.update(position.get("journal_context", {}))
+            trade["trade_id"] = len(state["trades"]) + 1
             state["trades"].append(trade)
             state["balance"] += trade["net_pnl"]
             state["position"] = None
@@ -66,13 +69,14 @@ def advance_paper_account(frame, strategy, state, signal_sides=None):
                 stop = entry - risk_distance if side == "LONG" else entry + risk_distance
                 target = entry + rr * risk_distance if side == "LONG" else entry - rr * risk_distance
                 state["position"] = {"entry": entry, "stop": stop, "target": target, "risk_distance": risk_distance,
-                                      "quantity": qty, "opened_at": str(timestamp), "side": side}
+                                      "quantity": qty, "opened_at": str(timestamp), "side": side,
+                                      "journal_context": dict(journal_context or {})}
                 msg = f"Paper position opened at {entry:.2f}; no broker order was sent."
     state["last_action"] = str(timestamp)
     return msg
 
 
-def advance_ict_paper_account(frame, state, news_blackout=False):
+def advance_ict_paper_account(frame, state, news_blackout=False, journal_context=None):
     """Run one finalized candle through the preserved ICT signal, in memory only."""
     from demo_safety import ict_entry_gate
     from strategies.ict import ict_signal
@@ -100,6 +104,7 @@ def advance_ict_paper_account(frame, state, news_blackout=False):
         else "No ICT paper entry: No valid ICT setup."
     )
     close = float(frame.close.iloc[-1])
+    state["last_mark"] = close
     if position:
         side = position["side"]
         candle = frame.iloc[-1]
@@ -114,6 +119,8 @@ def advance_ict_paper_account(frame, state, news_blackout=False):
             fees = (position["entry"] + close) * position["quantity"] * 0.0004
             trade = {"side": side, "entry": position["entry"], "exit": close, "quantity": position["quantity"], "reason": reason,
                      "gross_pnl": gross, "fees": fees, "net_pnl": gross - fees, "opened_at": position["opened_at"], "closed_at": str(timestamp)}
+            trade.update(position.get("journal_context", {}))
+            trade["trade_id"] = len(state["trades"]) + 1
             state["trades"].append(trade)
             state["balance"] += trade["net_pnl"]
             state["position"] = None
@@ -129,7 +136,8 @@ def advance_ict_paper_account(frame, state, news_blackout=False):
             state["position"] = {"side": signal_side, "entry": entry,
                                   "stop": entry - risk_distance if is_long else entry + risk_distance,
                                   "target": entry + 2 * risk_distance if is_long else entry - 2 * risk_distance,
-                                  "quantity": quantity, "opened_at": str(timestamp)}
+                                  "quantity": quantity, "opened_at": str(timestamp),
+                                  "journal_context": dict(journal_context or {})}
             msg = f"ICT paper position opened ({signal_side}) at {entry:.2f}; no order was sent."
     state["last_action"] = str(timestamp)
     return msg

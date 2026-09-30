@@ -16,6 +16,8 @@ from demo_paper import advance_paper_account, advance_ict_paper_account
 from demo_safety import DEMO_MODE, LIVE_ORDERS_ENABLED, SafetyError, assert_demo_mode, ict_entry_gate
 from demo_strategy import EXAMPLES, StrategyError, generate_strategy_code, parse_strategy, parse_strategy_json, validate_strategy
 from platform_strategies import strategy_registry
+from charting import render_ohlcv_chart
+from portfolio import portfolio_snapshot
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("ict_demo")
@@ -49,6 +51,44 @@ def show_market_data_status(result: MarketDataResult) -> None:
     st.caption(f"Data source: {result.source} · {len(result.frame)} finalized candles · UTC")
     if result.used_fallback:
         st.info("Using backup data source")
+    render_ohlcv_chart(result.frame.tail(400), title=f"{symbol} · {timeframe}")
+
+
+def show_additional_metrics(metrics):
+    fields = (
+        "Gross profit", "Gross loss", "Expectancy", "Average win", "Average loss", "Average R",
+        "Fees paid", "Estimated slippage paid", "Average trade duration minutes",
+        "Maximum consecutive wins", "Maximum consecutive losses", "Sharpe ratio", "Sortino ratio",
+    )
+    with st.expander("Additional backtest metrics"):
+        st.json({name: metrics.get(name) if metrics.get(name) is not None else "N/A" for name in fields})
+
+
+def get_paper_account(strategy_id, starting_capital, market, interval):
+    accounts = st.session_state.setdefault("paper_accounts", {})
+    account_key = f"{strategy_id}|{market}|{interval}"
+    state = accounts.setdefault(account_key, {})
+    if state.get("starting_capital") != float(starting_capital):
+        state.clear()
+        state.update({"balance": float(starting_capital), "starting_capital": float(starting_capital),
+                      "position": None, "trades": [], "last_action": None, "journal_notes": {}})
+    state.update({"strategy_id": strategy_id, "market": market, "timeframe": interval})
+    return state
+
+
+def show_paper_journal(state, key_prefix):
+    trades = state.get("trades", [])
+    if not trades:
+        st.caption("No closed paper trades yet.")
+        return
+    st.dataframe(pd.DataFrame(trades), width="stretch", hide_index=True)
+    labels = [f"#{trade.get('trade_id', index + 1)} {trade.get('side', '')} · {trade.get('closed_at', '')}" for index, trade in enumerate(trades)]
+    selected = st.selectbox("Journal entry", range(len(trades)), format_func=lambda index: labels[index], key=f"{key_prefix}_journal_trade")
+    note_key = f"{key_prefix}_journal_note_{selected}"
+    note = st.text_area("Your note", value=trades[selected].get("notes", ""), key=note_key, max_chars=1000)
+    if st.button("Save journal note", key=f"{key_prefix}_save_journal_note"):
+        trades[selected]["notes"] = note
+        st.success("Note saved in this Streamlit session.")
 
 if not DEMO_MODE or LIVE_ORDERS_ENABLED:
     st.error("Safety configuration failed. Execution is disabled.")
@@ -94,7 +134,7 @@ if strategy_choice == "AI Strategy":
     backtest = bt_col.button("Backtest", width="stretch")
     paper_run = paper_col.button("Run paper trading", width="stretch")
 
-    if generate or backtest or paper_run or selected_example:
+    if generate or selected_example or ((backtest or paper_run) and not st.session_state.get("generated_strategy")):
         try:
             st.session_state.generated_strategy = parse_strategy(selected_example or text)
             st.session_state.strategy_error = None
@@ -136,6 +176,8 @@ if strategy_choice == "AI Strategy":
         if save_version:
             try:
                 checked = parse_strategy_json(edited_rules)
+                st.session_state.generated_strategy = checked
+                st.session_state.strategy_rules_source = json.dumps(checked, indent=2)
                 versions = st.session_state.setdefault("strategy_library", [])
                 matching = [item for item in versions if item["name"] == strategy_name and item["market"] == symbol and item["timeframe"] == timeframe]
                 version = len(matching) + 1
@@ -150,6 +192,8 @@ if strategy_choice == "AI Strategy":
         st.success("Strategy validated. Fixed demo risk limits apply to all runs.")
         if backtest or paper_run:
             try:
+                strategy = parse_strategy_json(edited_rules)
+                st.session_state.generated_strategy = strategy
                 assert_demo_mode()
                 with st.spinner("Loading public candles and simulating..."):
                     data_result = load_market_data(symbol, timeframe, 1000)
@@ -164,17 +208,19 @@ if strategy_choice == "AI Strategy":
                         label = f"{value:.2f}%" if name.endswith("%") else f"${value:,.2f}" if name == "Total P&L" else str(value)
                         col.metric(name, label)
                     st.caption(f"Starting: ${metrics['Starting capital']:,.2f} · Ending: ${metrics['Ending capital']:,.2f} · Wins: {metrics['Wins']} · Losses: {metrics['Losses']} · Average trade: ${metrics['Average trade']:,.2f} · Profit factor: {metrics['Profit factor']:.2f}")
+                    show_additional_metrics(metrics)
                     st.subheader("Equity curve")
                     st.line_chart(equity["equity"], height=270)
                     st.subheader("Trade history")
                     st.dataframe(trades, width="stretch", hide_index=True)
                     st.caption("Assumptions: signals use finalized candles; fills occur at the next candle open with 0.01% slippage and 0.04% fees. If stop and target fall within one candle, stop is assumed first. Open positions are marked to market and closed at the end of the sample.")
                 if paper_run:
-                    state = st.session_state.setdefault("paper_account", {"balance": float(capital), "position": None, "trades": [], "last_action": None})
-                    if state.get("starting_capital") != float(capital):
-                        state.clear()
-                        state.update({"balance": float(capital), "starting_capital": float(capital), "position": None, "trades": [], "last_action": None})
-                    result = advance_paper_account(data, strategy, state)
+                    state = get_paper_account("custom.dsl", capital, symbol, timeframe)
+                    context = {"strategy_id": "custom.dsl", "strategy_version": "1.0.0", "market": symbol,
+                               "timeframe": timeframe, "data_source": data_result.source,
+                               "entry_rules": json.dumps(strategy["entry"], sort_keys=True),
+                               "market_context": f"close={float(data.close.iloc[-1]):.8g}"}
+                    result = advance_paper_account(data, strategy, state, journal_context=context)
                     st.subheader("PAPER TRADING")
                     st.info(result)
                     p1, p2, p3 = st.columns(3)
@@ -183,7 +229,7 @@ if strategy_choice == "AI Strategy":
                     p3.metric("Closed trades", len(state["trades"]))
                     if state["position"]:
                         st.json(state["position"])
-                    st.dataframe(pd.DataFrame(state["trades"]), width="stretch", hide_index=True)
+                    show_paper_journal(state, "custom")
             except (MarketDataError, StrategyError, SafetyError, ValueError) as exc:
                 st.warning(str(exc))
             except Exception:
@@ -225,14 +271,16 @@ elif strategy_choice == "Existing ICT Strategy":
                     col.metric(name, label)
                 st.line_chart(equity["equity"], height=270)
                 st.dataframe(trades, width="stretch", hide_index=True)
+                show_additional_metrics(metrics)
                 st.caption("Finalized-candle ICT signals fill at the next candle open. 24-hour evaluation, news blackout, cooldown, fixed 1% risk, 2R target and 1x notional cap apply.")
             if paper_ict:
-                state = st.session_state.setdefault("ict_paper_account", {"balance": float(capital), "position": None, "trades": [], "last_action": None})
-                if state.get("starting_capital") != float(capital):
-                    state.clear()
-                    state.update({"balance": float(capital), "starting_capital": float(capital), "position": None, "trades": [], "last_action": None})
+                state = get_paper_account("ict", capital, symbol, timeframe)
                 st.subheader("ICT PAPER TRADING")
-                st.info(advance_ict_paper_account(data, state, news_blackout=blackout))
+                ict_context = {"strategy_id": "ict", "strategy_version": "1.0.0", "market": symbol,
+                               "timeframe": timeframe, "data_source": data_result.source,
+                               "entry_rules": "Existing ICT signal implementation",
+                               "market_context": f"close={float(data.close.iloc[-1]):.8g}"}
+                st.info(advance_ict_paper_account(data, state, news_blackout=blackout, journal_context=ict_context))
                 c1, c2, c3 = st.columns(3)
                 c1.metric("Paper balance", f"${state['balance']:,.2f}")
                 c2.metric("Open position", "Yes" if state["position"] else "No")
@@ -296,26 +344,45 @@ else:
                     col.metric(name, label)
                 st.line_chart(equity["equity"], height=270)
                 st.dataframe(trades, width="stretch", hide_index=True)
+                show_additional_metrics(metrics)
                 st.caption("Signals use finalized candles and next-candle-open fills, 0.01% slippage, 0.04% fees, 1% risk, 2R target, 1x notional cap, 30-minute cooldown, and conservative stop-first intrabar handling.")
             if paper_quant:
-                state = st.session_state.setdefault("quant_paper_account", {"balance": float(capital), "position": None, "trades": [], "last_action": None})
-                if state.get("starting_capital") != float(capital):
-                    state.clear()
-                    state.update({"balance": float(capital), "starting_capital": float(capital), "position": None, "trades": [], "last_action": None})
+                state = get_paper_account(plugin_id, capital, symbol, timeframe)
+                quant_context = {"strategy_id": plugin_id, "strategy_version": plugin.metadata.version, "market": symbol,
+                                 "timeframe": timeframe, "data_source": data_result.source,
+                                 "entry_rules": json.dumps(parameters, sort_keys=True),
+                                 "market_context": f"close={float(data.close.iloc[-1]):.8g}"}
                 st.subheader("QUANT PAPER TRADING")
-                st.info(advance_paper_account(data, {"side": "BUY", "entry": [], "exit": [], "risk_fraction": .01, "rr": 2., "leverage": 1.}, state, signal_sides=signals))
+                st.info(advance_paper_account(data, {"side": "BUY", "entry": [], "exit": [], "risk_fraction": .01, "rr": 2., "leverage": 1.}, state, signal_sides=signals, journal_context=quant_context))
                 p1, p2, p3 = st.columns(3)
                 p1.metric("Paper balance", f"${state['balance']:,.2f}")
                 p2.metric("Open position", "Yes" if state["position"] else "No")
                 p3.metric("Closed trades", len(state["trades"]))
                 if state["position"]:
                     st.json(state["position"])
-                st.dataframe(pd.DataFrame(state["trades"]), width="stretch", hide_index=True)
+                show_paper_journal(state, plugin_id.replace(".", "_"))
         except (MarketDataError, StrategyError, SafetyError, ValueError) as exc:
             st.warning(str(exc))
         except Exception:
             LOGGER.exception("Quant strategy operation failed")
             st.error("Quant strategy could not complete that operation. Please try again.")
+
+paper_accounts = st.session_state.get("paper_accounts", {})
+if paper_accounts:
+    snapshot = portfolio_snapshot(paper_accounts.values())
+    st.divider()
+    st.subheader("Session portfolio · PAPER TRADING")
+    st.caption("Aggregated from this browser session's isolated strategy / market / timeframe accounts.")
+    portfolio_cols = st.columns(5)
+    portfolio_cols[0].metric("Cash balance", f"${snapshot['balance']:,.2f}")
+    portfolio_cols[1].metric("Equity", f"${snapshot['equity']:,.2f}")
+    portfolio_cols[2].metric("Realized P&L", f"${snapshot['realized_pnl']:,.2f}")
+    portfolio_cols[3].metric("Unrealized P&L", f"${snapshot['unrealized_pnl']:,.2f}")
+    portfolio_cols[4].metric("Open positions", snapshot["positions"])
+    st.caption(f"Closed paper trades: {snapshot['closed_trades']} · Win rate: {snapshot['win_rate_pct']:.1f}%" if snapshot["win_rate_pct"] is not None else f"Closed paper trades: {snapshot['closed_trades']} · Win rate: N/A")
+    if snapshot["trade_journal"]:
+        st.subheader("Combined trade journal")
+        st.dataframe(pd.DataFrame(snapshot["trade_journal"]), width="stretch", hide_index=True)
 
 st.divider()
 st.caption("AI turns natural-language trading ideas into structured, testable strategies. Historical simulation is not a prediction of future results.")

@@ -111,7 +111,7 @@ def _local_parse(text):
         if entry and exit_:
             return {"side": "BUY", "entry": [_condition("RSI", "<", float(entry.group(1)), period)], "exit": [_condition("RSI", ">", float(exit_.group(1)), period)]}
     if "ema" in s and "cross" in s:
-        periods = [int(v) for v in re.findall(r"(\d+)\s*ema", s)]
+        periods = [int(left or right) for left, right in re.findall(r"(?:ema\s*(\d+)|(\d+)\s*ema)", s)]
         if len(periods) >= 2:
             fast, slow = periods[:2]
             entry = [_condition("EMA", "crosses_above", period=fast, compare_to={"indicator": "EMA", "period": slow})]
@@ -194,10 +194,11 @@ def generate_strategy_code(strategy):
         "import json\n"
         "from demo_strategy import evaluate_conditions, validate_strategy\n\n"
         f"SPEC = json.loads({encoded})\n\n"
-        "def signal_series(frame):\n"
+        "def evaluate_strategy(frame):\n"
         "    spec = validate_strategy(SPEC)\n"
         "    entries = evaluate_conditions(frame, spec['entry']).fillna(False)\n"
-        "    return entries.map(lambda active: spec['side'] if active else None)\n"
+        "    exits = evaluate_conditions(frame, spec['exit']).fillna(False)\n"
+        "    return {'side': spec['side'], 'entry': entries, 'exit': exits}\n"
     )
 
 
