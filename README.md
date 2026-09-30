@@ -17,7 +17,7 @@ The public Streamlit app has no broker or exchange credential inputs. Its only o
 Streamlit UI
   ├─ natural language → optional LLM JSON / built-in example parser
   ├─ strict DSL validation (`demo_strategy.py`)
-  ├─ public, read-only OHLCV (`demo_data.py`, CCXT Binance spot)
+  ├─ public, read-only OHLCV: Binance → Coinbase Exchange → bundled historical snapshots (`demo_data.py`)
   ├─ fixed safety gates (`demo_safety.py`)
   ├─ next-candle backtest (`demo_backtest.py`)
   └─ in-memory paper account (`demo_paper.py`)
@@ -52,8 +52,9 @@ The backtester evaluates a finalized candle and fills signals at the next candle
 - `DEMO_MODE = True` is a code constant and has no UI toggle or environment override.
 - Live orders are disabled by a fixed code constant; the public application contains no order placement integration.
 - Every simulation entry point checks demo mode. Risk is capped at 1%, R:R is at least 2.0, leverage/notional is at most 1x, and cooldown is 30 minutes.
-- Market candles are validated for missing values, malformed ranges, duplicates, timestamp order, and adequate history before use.
-- Market data is fetched from Binance's public spot OHLCV endpoint only. No trading keys are needed.
+- Market candles are validated for missing values, malformed ranges, duplicates, timestamp order, UTC index, finalized candles, and adequate history before use.
+- Data tries Binance public spot candles first, Coinbase Exchange public candles second, and a matching CSV snapshot under `sample_data/` last. No data-provider credentials are needed.
+- If a backup is used, the UI says “Using backup data source” and names it. Bundled CSVs are fixed historical Coinbase Exchange snapshots, clearly labeled as not live.
 - API keys are optional and read from `OPENAI_API_KEY`; they are never displayed or logged. `.env` and Streamlit secrets are ignored by Git.
 - Natural language output is constrained to JSON and validated. The model has no broker, shell, filesystem, or application-configuration tools.
 

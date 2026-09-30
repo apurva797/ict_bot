@@ -8,7 +8,7 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from demo_backtest import run_backtest, run_ict_backtest
-from demo_data import MarketDataError, fetch_ohlcv
+from demo_data import MarketDataError, MarketDataResult, fetch_market_data
 from demo_paper import advance_paper_account, advance_ict_paper_account
 from demo_safety import DEMO_MODE, LIVE_ORDERS_ENABLED, SafetyError, assert_demo_mode, ict_entry_gate
 from demo_strategy import EXAMPLES, StrategyError, parse_strategy, validate_strategy
@@ -34,7 +34,13 @@ st.caption("Natural language → restricted strategy rules → backtest → pape
 
 @st.cache_data(ttl=60, show_spinner=False)
 def load_market_data(selected_symbol, selected_timeframe, candle_limit):
-    return fetch_ohlcv(selected_symbol, selected_timeframe, limit=candle_limit)
+    return fetch_market_data(selected_symbol, selected_timeframe, limit=candle_limit)
+
+
+def show_market_data_status(result: MarketDataResult) -> None:
+    st.caption(f"Data source: {result.source} · {len(result.frame)} finalized candles · UTC")
+    if result.used_fallback:
+        st.info("Using backup data source")
 
 if not DEMO_MODE or LIVE_ORDERS_ENABLED:
     st.error("Safety configuration failed. Execution is disabled.")
@@ -93,8 +99,9 @@ if strategy_choice == "AI Strategy":
             try:
                 assert_demo_mode()
                 with st.spinner("Loading public candles and simulating..."):
-                    data = load_market_data(symbol, timeframe, 1000)
-                st.caption(f"Data source: Binance public OHLCV · {len(data)} finalized candles · UTC")
+                    data_result = load_market_data(symbol, timeframe, 1000)
+                show_market_data_status(data_result)
+                data = data_result.frame
                 if backtest:
                     metrics, equity, trades = run_backtest(data, strategy, starting_capital=float(capital))
                     st.subheader("3 · Backtest performance")
@@ -142,7 +149,9 @@ else:
         try:
             from config import NEWS_BLACKOUT, NEWS_FILTER_ENABLED
             blackout = NEWS_FILTER_ENABLED and NEWS_BLACKOUT
-            data = load_market_data(symbol, timeframe, 1000 if backtest_ict else 500)
+            data_result = load_market_data(symbol, timeframe, 1000 if backtest_ict else 500)
+            show_market_data_status(data_result)
+            data = data_result.frame
             if run_ict:
                 from strategies.ict import ict_signal
                 permitted, reason = ict_entry_gate(data.index[-1], news_blackout=blackout)
@@ -174,9 +183,15 @@ else:
                 c2.metric("Open position", "Yes" if state["position"] else "No")
                 c3.metric("Closed trades", len(state["trades"]))
                 st.dataframe(pd.DataFrame(state["trades"]), width="stretch", hide_index=True)
-        except Exception:
+        except MarketDataError as exc:
+            LOGGER.warning("ICT market-data/signal request could not proceed: %s", exc)
+            st.warning(str(exc))
+        except Exception as exc:
             LOGGER.exception("ICT signal failed")
-            st.error("The ICT signal could not be calculated. Check market data and try again.")
+            st.error(
+                f"ICT calculation failed ({type(exc).__name__}). "
+                "Details are recorded in private app logs; no stack trace or credentials are shown here."
+            )
 
 st.divider()
 st.caption("AI turns natural-language trading ideas into structured, testable strategies. Historical simulation is not a prediction of future results.")
