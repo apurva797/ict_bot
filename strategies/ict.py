@@ -315,3 +315,4 @@ def ict_signal(candles, htf_candles=None):
             "ICT conditions not sufficiently aligned"
         )
     }
+

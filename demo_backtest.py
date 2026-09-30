@@ -160,3 +160,4 @@ def _trade(position, closed_at, exit_price, reason, gross, fees, pnl):
             "entry": position["entry"], "exit": exit_price, "stop": position["stop"], "target": position["target"],
             "quantity": position["quantity"], "risk_amount": position["risk_amount"], "reason": reason,
             "gross_pnl": gross, "fees": fees, "net_pnl": pnl}
+

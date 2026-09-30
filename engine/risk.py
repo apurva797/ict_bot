@@ -177,7 +177,7 @@ def validate_trade(
     stop,
     target,
     side,
-    min_rr=2.0
+    min_rr=1.5
 ):
     rr = calculate_rr(
         entry,

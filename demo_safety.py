@@ -47,3 +47,4 @@ def ict_entry_gate(timestamp, news_blackout=False, last_trade_at=None):
 
 def has_optional_llm_key():
     return bool(os.getenv("OPENAI_API_KEY", "").strip())
+

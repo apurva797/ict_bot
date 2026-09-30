@@ -203,3 +203,4 @@ def fetch_market_data(symbol="BTC/USDT", timeframe="1h", limit=1000):
 def fetch_ohlcv(symbol="BTC/USDT", timeframe="1h", limit=1000):
     """Compatibility helper for older modules that only need the DataFrame."""
     return fetch_market_data(symbol, timeframe, limit).frame
+

@@ -105,3 +105,4 @@ def volume_signal(candles):
         "score": 0,
         "reason": f"No significant volume confirmation: {volume_ratio:.2f}x"
     }
+

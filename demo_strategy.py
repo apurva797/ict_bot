@@ -114,7 +114,12 @@ def _local_parse(text):
         periods = [int(v) for v in re.findall(r"(\d+)\s*ema", s)]
         if len(periods) >= 2:
             fast, slow = periods[:2]
-            return {"side": "BUY", "entry": [_condition("EMA", "crosses_above", period=fast, compare_to={"indicator": "EMA", "period": slow})], "exit": [_condition("EMA", "crosses_below", period=fast, compare_to={"indicator": "EMA", "period": slow})]}
+            entry = [_condition("EMA", "crosses_above", period=fast, compare_to={"indicator": "EMA", "period": slow})]
+            rsi_filter = re.search(r"\brsi(?:\s*\(\s*(\d+)\s*\))?[\s\S]{0,35}?(?:above|over|>)\s*(\d+(?:\.\d+)?)", s)
+            if rsi_filter:
+                period = int(rsi_filter.group(1) or 14)
+                entry.append(_condition("RSI", ">", float(rsi_filter.group(2)), period))
+            return {"side": "BUY", "entry": entry, "exit": [_condition("EMA", "crosses_below", period=fast, compare_to={"indicator": "EMA", "period": slow})]}
     dip = re.search(r"(\d+(?:\.\d+)?)\s*%.*dip", s)
     gain = re.search(r"(\d+(?:\.\d+)?)\s*%.*gain", s)
     if dip and gain:
@@ -125,6 +130,24 @@ def _local_parse(text):
 def parse_strategy(text):
     if not isinstance(text, str) or not text.strip() or len(text) > MAX_TEXT:
         raise StrategyError("Enter a strategy under 500 characters.")
+    gemini_key = os.getenv("GEMINI_API_KEY", "").strip()
+    if gemini_key:
+        now = time.monotonic()
+        while _LLM_CALLS and now - _LLM_CALLS[0] > 60:
+            _LLM_CALLS.popleft()
+        if len(_LLM_CALLS) >= 5:
+            raise StrategyError("AI request limit reached. Wait one minute and try again.")
+        _LLM_CALLS.append(now)
+        try:
+            from gemini_service import generate_strategy_json
+            return parse_strategy_json(generate_strategy_json(text))
+        except StrategyError:
+            raise
+        except Exception as exc:
+            try:
+                return validate_strategy(_local_parse(text))
+            except StrategyError:
+                raise StrategyError("Gemini is unavailable or the request is ambiguous. Refine the rules or configure GEMINI_API_KEY.") from exc
     key = os.getenv("OPENAI_API_KEY", "").strip()
     if not key:
         return validate_strategy(_local_parse(text))
@@ -155,6 +178,27 @@ def parse_strategy(text):
             return validate_strategy(_local_parse(text))
         except StrategyError:
             raise StrategyError("The strategy service is unavailable. Try a simpler condition.") from exc
+
+
+def generate_strategy_code(strategy):
+    """Return a deterministic, version-tagged Python adapter for display/export.
+
+    The app never executes generated source. Execution continues through the
+    validated DSL and its fixed indicator evaluator.
+    """
+    normalized = validate_strategy(strategy)
+    payload = json.dumps(normalized, sort_keys=True, separators=(",", ":"))
+    encoded = json.dumps(payload)
+    return (
+        '"""Generated strategy adapter; DSL version 1.0. Not dynamically executed by the app."""\n'
+        "import json\n"
+        "from demo_strategy import evaluate_conditions, validate_strategy\n\n"
+        f"SPEC = json.loads({encoded})\n\n"
+        "def signal_series(frame):\n"
+        "    spec = validate_strategy(SPEC)\n"
+        "    entries = evaluate_conditions(frame, spec['entry']).fillna(False)\n"
+        "    return entries.map(lambda active: spec['side'] if active else None)\n"
+    )
 
 
 def indicators(frame, spec):
@@ -208,3 +252,4 @@ def condition_mask(frame, condition, entry_price=None):
 def evaluate_conditions(frame, conditions, entry_price=None):
     masks = [condition_mask(frame, item, entry_price=entry_price).fillna(False) for item in conditions]
     return pd.concat(masks, axis=1).all(axis=1)
+

@@ -4,7 +4,7 @@ from demo_safety import assert_demo_mode, validate_risk_controls
 from demo_strategy import evaluate_conditions
 
 
-def advance_paper_account(frame, strategy, state):
+def advance_paper_account(frame, strategy, state, signal_sides=None):
     assert_demo_mode()
     validate_risk_controls(strategy.get("risk_fraction", 0.01), strategy.get("rr", 2), strategy.get("leverage", 1))
     if frame is None or len(frame) < 35:
@@ -24,7 +24,11 @@ def advance_paper_account(frame, strategy, state):
     if position:
         risk = position["risk_distance"]
         pnl_pct = (close / position["entry"] - 1) * (1 if side == "LONG" else -1) * 100
-        exit_signal = bool(evaluate_conditions(frame, strategy["exit"], entry_price=position["entry"]).iloc[-1])
+        if signal_sides is None:
+            exit_signal = bool(evaluate_conditions(frame, strategy["exit"], entry_price=position["entry"]).iloc[-1])
+        else:
+            latest_side = signal_sides.iloc[-1]
+            exit_signal = latest_side in {"BUY", "SELL"} and latest_side != ("BUY" if side == "LONG" else "SELL")
         reason = None
         candle = frame.iloc[-1]
         if (side == "LONG" and candle.low <= position["stop"]) or (side == "SHORT" and candle.high >= position["stop"]):
@@ -46,10 +50,13 @@ def advance_paper_account(frame, strategy, state):
             state["last_closed_at"] = timestamp
             msg = f"Paper position closed: {reason} ({pnl_pct:.2f}% before fees)."
     else:
-        signal = bool(evaluate_conditions(frame, strategy["entry"]).iloc[-1])
+        latest_side = signal_sides.iloc[-1] if signal_sides is not None else None
+        signal = latest_side in {"BUY", "SELL"} if signal_sides is not None else bool(evaluate_conditions(frame, strategy["entry"]).iloc[-1])
         last_close = state.get("last_closed_at")
         cooldown_ok = last_close is None or (timestamp - last_close).total_seconds() >= 30 * 60
         if signal and cooldown_ok:
+            if signal_sides is not None:
+                side = "LONG" if latest_side == "BUY" else "SHORT"
             entry = close
             risk_distance = entry * 0.01
             risk_amount = state["balance"] * float(strategy.get("risk_fraction", 0.01))
@@ -126,3 +133,4 @@ def advance_ict_paper_account(frame, state, news_blackout=False):
             msg = f"ICT paper position opened ({signal_side}) at {entry:.2f}; no order was sent."
     state["last_action"] = str(timestamp)
     return msg
+
