@@ -10,6 +10,7 @@ from config import (
     HTF_LIMIT,
     LTF_LIMIT,
     MIN_RR,
+    DEFAULT_RR,
     PAPER_TRADING,
     MAX_TRADES_PER_DAY,
     MAX_DAILY_LOSS_R,
@@ -488,6 +489,89 @@ def safe_strategy_call(
         }
 
 
+def analyze_multi_strategy_candles(candles):
+    """Run the existing regime, strategy, and aggregation pipeline on finalized OHLCV."""
+    if candles is None or len(candles) < 2:
+        raise ValueError("At least two finalized candles are required for multi-strategy analysis.")
+
+    price = float(candles[-1][4])
+    regime_data = detect_regime(candles)
+    regime = regime_data.get("regime", "UNKNOWN")
+    strategy_functions = (
+        ("TREND", trend_signal),
+        ("MOMENTUM", momentum_signal),
+        ("VOLATILITY", volatility_signal),
+        ("BREAKOUT", breakout_signal),
+        ("VWAP", vwap_signal),
+        ("VOLUME", volume_signal),
+        ("PRICE_ACTION", price_action_signal),
+        ("MEAN_REVERSION", mean_reversion_signal),
+        ("ICT", ict_signal),
+        ("WYCKOFF", wyckoff_signal),
+        ("KAMA", kama_signal),
+        ("DONCHIAN", donchian_signal),
+        ("DIVERGENCE", divergence_signal),
+        ("CAMBRIDGE_HOOK", cambridge_hook_signal),
+    )
+    signals = {
+        name: safe_strategy_call(name, function, candles)
+        for name, function in strategy_functions
+    }
+    signals["CRYPTO"] = get_crypto_signal(price)
+
+    try:
+        final_signal = score_strategies(signals, regime)
+    except TypeError:
+        final_signal = score_strategies(strategy_signals=signals, regime=regime)
+    if not isinstance(final_signal, dict):
+        raise ValueError("The multi-strategy scorer returned an invalid result.")
+
+    side = final_signal.get("side", "NEUTRAL")
+    active = final_signal.get("active_long" if side == "LONG" else "active_short", [])
+    reason = final_signal.get("reason") or (
+        f"Weighted {side.lower()} consensus from {', '.join(active)}."
+        if side in {"LONG", "SHORT"} and active
+        else (
+            "No directional agreement among active strategies. "
+            f"Long: {', '.join(final_signal.get('active_long', [])) or 'none'}; "
+            f"short: {', '.join(final_signal.get('active_short', [])) or 'none'}."
+        )
+    )
+    final_signal = {**final_signal, "reason": reason}
+    return {
+        "price": price,
+        "regime": regime_data,
+        "signals": signals,
+        "final_signal": final_signal,
+    }
+
+
+def build_multi_strategy_trade_levels(candles, side):
+    """Use the bot's existing ATR, 2R default, and 1.5R minimum risk rules."""
+    if side not in {"LONG", "SHORT"}:
+        raise ValueError("No valid direction")
+    if candles is None or len(candles) < ATR_PERIOD + 1:
+        raise ValueError("ATR unavailable")
+    price = float(candles[-1][4])
+    atr = calculate_atr(candles, ATR_PERIOD)
+    if atr is None or float(atr) <= 0:
+        raise ValueError("ATR unavailable")
+    atr = float(atr)
+    levels = calculate_atr_levels(
+        entry=price, atr=atr, side=side,
+        sl_multiplier=ATR_SL_MULTIPLIER, rr=DEFAULT_RR,
+    )
+    if levels is None:
+        raise ValueError("Could not calculate ATR levels")
+    valid, rr, reason = validate_trade(
+        entry=levels["entry"], stop=levels["stop"], target=levels["target"],
+        side=side, min_rr=MIN_RR,
+    )
+    if not valid:
+        raise ValueError(reason)
+    return {**levels, "atr": atr, "rr": rr}
+
+
 # ============================================================
 # MAIN ANALYSIS
 # ============================================================
@@ -641,273 +725,35 @@ def run_analysis():
 
             return
 
-    # ========================================================
-    # MARKET REGIME
-    # ========================================================
-
     try:
-
-        regime_data = detect_regime(
-            ltf
-        )
-
+        analysis = analyze_multi_strategy_candles(ltf)
     except Exception as e:
-
-        print(
-            f"REGIME ERROR: {e}"
-        )
-
+        print(f"MULTI-STRATEGY ANALYSIS ERROR: {e}")
         return
 
-    regime = regime_data.get(
-        "regime",
-        "UNKNOWN",
-    )
+    regime_data = analysis["regime"]
+    regime = regime_data.get("regime", "UNKNOWN")
+    signals = analysis["signals"]
+    final_signal = analysis["final_signal"]
 
-    print(
-        f"\nREGIME {regime} "
-        f"({regime_data.get('score', 0)})"
-    )
-
-    print(
-        f"Regime Reason: "
-        f"{regime_data.get('reason', '')}"
-    )
-
-    # ========================================================
-    # STRATEGY SIGNALS
-    # ========================================================
-
-    signals = {}
-
-    # ========================================================
-    # NORMAL STRATEGIES
-    # ========================================================
-
-    signals["TREND"] = safe_strategy_call(
-        "TREND",
-        trend_signal,
-        ltf,
-    )
-
-    signals["MOMENTUM"] = safe_strategy_call(
-        "MOMENTUM",
-        momentum_signal,
-        ltf,
-    )
-
-    signals["VOLATILITY"] = safe_strategy_call(
-        "VOLATILITY",
-        volatility_signal,
-        ltf,
-    )
-
-    signals["BREAKOUT"] = safe_strategy_call(
-        "BREAKOUT",
-        breakout_signal,
-        ltf,
-    )
-
-    signals["VWAP"] = safe_strategy_call(
-        "VWAP",
-        vwap_signal,
-        ltf,
-    )
-
-    signals["VOLUME"] = safe_strategy_call(
-        "VOLUME",
-        volume_signal,
-        ltf,
-    )
-
-    signals["PRICE_ACTION"] = safe_strategy_call(
-        "PRICE_ACTION",
-        price_action_signal,
-        ltf,
-    )
-
-    signals["MEAN_REVERSION"] = safe_strategy_call(
-        "MEAN_REVERSION",
-        mean_reversion_signal,
-        ltf,
-    )
-
-    signals["ICT"] = safe_strategy_call(
-        "ICT",
-        ict_signal,
-        ltf,
-    )
-
-    signals["WYCKOFF"] = safe_strategy_call(
-        "WYCKOFF",
-        wyckoff_signal,
-        ltf,
-    )
-
-    # ========================================================
-    # NEW QUANT STRATEGIES
-    # ========================================================
-
-    # KAMA
-    # Normal condition = 1 point
-
-    signals["KAMA"] = safe_strategy_call(
-        "KAMA",
-        kama_signal,
-        ltf,
-    )
-
-    # Donchian
-    # Heavy condition = 2 points
-
-    signals["DONCHIAN"] = safe_strategy_call(
-        "DONCHIAN",
-        donchian_signal,
-        ltf,
-    )
-
-    # Momentum Divergence
-    # Heavy condition = 2 points
-
-    signals["DIVERGENCE"] = safe_strategy_call(
-        "DIVERGENCE",
-        divergence_signal,
-        ltf,
-    )
-
-    # Cambridge Hook
-    # Heavy condition = 2 points
-
-    signals["CAMBRIDGE_HOOK"] = safe_strategy_call(
-        "CAMBRIDGE_HOOK",
-        cambridge_hook_signal,
-        ltf,
-    )
-
-    # ========================================================
-    # CRYPTO
-    # ========================================================
-
-    signals["CRYPTO"] = get_crypto_signal(
-        price
-    )
-
-    # ========================================================
-    # PRINT ALL STRATEGIES
-    # ========================================================
-
+    print(f"\nREGIME {regime} ({regime_data.get('score', 0)})")
+    print(f"Regime Reason: {regime_data.get('reason', '')}")
     print("\nSTRATEGY SIGNALS")
-
     print("-" * 70)
-
     for name, signal in signals.items():
-
-        side = signal.get(
-            "side",
-            "NEUTRAL",
-        )
-
-        score = signal.get(
-            "score",
-            0,
-        )
-
-        reason = signal.get(
-            "reason",
-            "",
-        )
-
         try:
-            score_display = f"{float(score):.0f}"
-
+            score_display = f"{float(signal.get('score', 0)):.0f}"
         except (TypeError, ValueError):
             score_display = "0"
-
-        print(
-            f"{name:<18} "
-            f"{side:<8} "
-            f"{score_display:<5} "
-            f"{reason}"
-        )
-
-    # ========================================================
-    # CRYPTO DETAILS
-    # ========================================================
+        print(f"{name:<18} {signal.get('side', 'NEUTRAL'):<8} {score_display:<5} {signal.get('reason', '')}")
 
     crypto = signals["CRYPTO"]
-
     if crypto.get("funding_rate") is not None:
-
         print("\nCRYPTO MARKET DATA")
-
         print("-" * 70)
-
-        print(
-            f"Funding Rate : "
-            f"{crypto['funding_rate']:.6f}"
-        )
-
-        if crypto.get("oi_change") is not None:
-
-            print(
-                f"OI Change    : "
-                f"{crypto['oi_change']:.4f}%"
-            )
-
-        else:
-
-            print(
-                "OI Change    : N/A "
-                "(waiting for next sample)"
-            )
-
-        if crypto.get("price_change") is not None:
-
-            print(
-                f"Price Change : "
-                f"{crypto['price_change']:.4f}%"
-            )
-
-        else:
-
-            print(
-                "Price Change : N/A "
-                "(waiting for next sample)"
-            )
-
-    # ========================================================
-    # MULTI-STRATEGY SCORER
-    # ========================================================
-
-    try:
-
-        final_signal = score_strategies(
-            signals,
-            regime,
-        )
-
-    except TypeError:
-
-        final_signal = score_strategies(
-            strategy_signals=signals,
-            regime=regime,
-        )
-
-    except Exception as e:
-
-        print(
-            f"\nSCORER ERROR: {e}"
-        )
-
-        return
-
-    if not isinstance(final_signal, dict):
-
-        print(
-            "\nTRADE BLOCKED: invalid scorer response"
-        )
-
-        return
+        print(f"Funding Rate : {crypto['funding_rate']:.6f}")
+        print(f"OI Change    : {crypto['oi_change']:.4f}%" if crypto.get("oi_change") is not None else "OI Change    : N/A (waiting for next sample)")
+        print(f"Price Change : {crypto['price_change']:.4f}%" if crypto.get("price_change") is not None else "Price Change : N/A (waiting for next sample)")
 
     # ========================================================
     # FINAL SIGNAL DATA
@@ -930,17 +776,22 @@ def run_analysis():
         "",
     )
 
-    confirmation_points = int(
-        final_signal.get(
-            "confirmation_points",
-            0,
+    confirmation_points = final_signal.get("confirmation_points")
+    if confirmation_points is None:
+        confirmation_points = (
+            f"Long {final_signal.get('long_confirmation_points', 0)} / "
+            f"Short {final_signal.get('short_confirmation_points', 0)}"
         )
-    )
 
     heavy_conditions = final_signal.get(
         "heavy_conditions",
         [],
     )
+    if not heavy_conditions:
+        heavy_conditions = sorted(set(
+            final_signal.get("long_heavy_conditions_list", [])
+            + final_signal.get("short_heavy_conditions_list", [])
+        ))
 
     confirmation_passed = bool(
         final_signal.get(
@@ -1103,15 +954,6 @@ def run_analysis():
 
         return
 
-    # Outside Kill Zones, retain the existing gate for non-ICT signals. A valid
-    # ICT signal aligned with the final direction may enter when the filter is off.
-    utc_hour = datetime.now(timezone.utc).hour
-    in_kill_zone = 7 <= utc_hour < 10 or 12 <= utc_hour < 15
-    ict_side = signals.get("ICT", {}).get("side")
-    if not in_kill_zone and ict_side != final_side:
-        print("\nTRADE BLOCKED: outside London/New York kill zones (UTC); no aligned ICT setup")
-        return
-
     # ========================================================
     # COOLDOWN
     # ========================================================
@@ -1160,117 +1002,19 @@ def run_analysis():
 
         return
 
-    # ========================================================
-    # ATR
-    # ========================================================
-
-    atr = calculate_atr(
-        ltf,
-        ATR_PERIOD,
-    )
-
-    if atr is None:
-
-        print(
-            "\nTRADE BLOCKED: "
-            "ATR unavailable"
-        )
-
-        return
-
     try:
-        atr = float(atr)
-    except (TypeError, ValueError):
-
-        print(
-            "\nTRADE BLOCKED: "
-            "Invalid ATR"
-        )
-
+        levels = build_multi_strategy_trade_levels(ltf, final_side)
+    except (TypeError, ValueError, KeyError) as e:
+        print(f"\nTRADE BLOCKED: {e}")
         return
 
-    if atr <= 0:
-
-        print(
-            "\nTRADE BLOCKED: "
-            "ATR <= 0"
-        )
-
-        return
-
-    print(
-        f"\nATR {atr:.4f}"
-    )
-
-    # ========================================================
-    # ATR SL / TP
-    # ========================================================
-
-    levels = calculate_atr_levels(
-        entry=price,
-        atr=atr,
-        side=final_side,
-        sl_multiplier=ATR_SL_MULTIPLIER,
-        rr=MIN_RR,
-    )
-
-    if levels is None:
-
-        print(
-            "\nTRADE BLOCKED: "
-            "Could not calculate ATR levels"
-        )
-
-        return
-
-    try:
-
-        entry = float(
-            levels["entry"]
-        )
-
-        stop = float(
-            levels["stop"]
-        )
-
-        target = float(
-            levels["target"]
-        )
-
-    except (KeyError, TypeError, ValueError):
-
-        print(
-            "\nTRADE BLOCKED: "
-            "Invalid ATR levels"
-        )
-
-        return
-
-    # ========================================================
-    # R:R VALIDATION
-    # ========================================================
-
-    valid, rr, validation_reason = validate_trade(
-        entry=entry,
-        stop=stop,
-        target=target,
-        side=final_side,
-        min_rr=MIN_RR,
-    )
-
-    print(
-        f"R:R {rr:.2f} "
-        f"{'VALID' if valid else 'INVALID'}"
-    )
-
-    if not valid:
-
-        print(
-            f"TRADE BLOCKED: "
-            f"{validation_reason}"
-        )
-
-        return
+    atr = levels["atr"]
+    entry = float(levels["entry"])
+    stop = float(levels["stop"])
+    target = float(levels["target"])
+    rr = float(levels["rr"])
+    print(f"\nATR {atr:.4f}")
+    print(f"R:R {rr:.2f} VALID")
 
     # ========================================================
     # RISK AMOUNT

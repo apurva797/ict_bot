@@ -2,9 +2,11 @@
 
 from demo_safety import assert_demo_mode, validate_risk_controls
 from demo_strategy import evaluate_conditions
+from config import MIN_RR
+from engine.risk import validate_trade
 
 
-def advance_paper_account(frame, strategy, state, signal_sides=None, journal_context=None):
+def advance_paper_account(frame, strategy, state, signal_sides=None, journal_context=None, entry_levels=None):
     assert_demo_mode()
     validate_risk_controls(strategy.get("risk_fraction", 0.01), strategy.get("rr", 2), strategy.get("leverage", 1))
     if frame is None or len(frame) < 35:
@@ -44,6 +46,8 @@ def advance_paper_account(frame, strategy, state, signal_sides=None, journal_con
             gross = (close - position["entry"]) * position["quantity"] * (1 if side == "LONG" else -1)
             fees = (position["entry"] + close) * position["quantity"] * 0.0004
             trade = {"side": side, "entry": position["entry"], "exit": close, "quantity": position["quantity"], "reason": reason,
+                     "risk_distance": position.get("risk_distance", abs(position["entry"]) * 0.01),
+                     "risk_amount": position.get("risk_amount"),
                      "gross_pnl": gross, "fees": fees, "net_pnl": gross - fees, "opened_at": position["opened_at"], "closed_at": str(timestamp)}
             trade.update(position.get("journal_context", {}))
             trade["trade_id"] = len(state["trades"]) + 1
@@ -62,16 +66,31 @@ def advance_paper_account(frame, strategy, state, signal_sides=None, journal_con
                 side = "LONG" if latest_side == "BUY" else "SHORT"
             entry = close
             risk_distance = entry * 0.01
-            risk_amount = state["balance"] * float(strategy.get("risk_fraction", 0.01))
-            qty = min(risk_amount / risk_distance, state["balance"] / entry)
-            if qty > 0 and qty * entry <= state["balance"]:
-                rr = float(strategy.get("rr", 2.0))
-                stop = entry - risk_distance if side == "LONG" else entry + risk_distance
-                target = entry + rr * risk_distance if side == "LONG" else entry - rr * risk_distance
-                state["position"] = {"entry": entry, "stop": stop, "target": target, "risk_distance": risk_distance,
-                                      "quantity": qty, "opened_at": str(timestamp), "side": side,
-                                      "journal_context": dict(journal_context or {})}
-                msg = f"Paper position opened at {entry:.2f}; no broker order was sent."
+            rr = float(strategy.get("rr", 2.0))
+            stop = entry - risk_distance if side == "LONG" else entry + risk_distance
+            target = entry + rr * risk_distance if side == "LONG" else entry - rr * risk_distance
+            if entry_levels is not None:
+                try:
+                    entry = float(entry_levels["entry"])
+                    stop = float(entry_levels["stop"])
+                    target = float(entry_levels["target"])
+                    risk_distance = abs(entry - stop)
+                    valid, rr, validation_reason = validate_trade(
+                        entry, stop, target, side, min_rr=MIN_RR
+                    )
+                except (KeyError, TypeError, ValueError):
+                    valid, validation_reason = False, "Invalid ATR trade levels"
+                if not valid:
+                    signal = False
+                    msg = f"Paper entry blocked: {validation_reason}."
+            if signal:
+                risk_amount = state["balance"] * float(strategy.get("risk_fraction", 0.01))
+                qty = min(risk_amount / risk_distance, state["balance"] / entry) if risk_distance > 0 else 0
+                if qty > 0 and qty * entry <= state["balance"]:
+                    state["position"] = {"entry": entry, "stop": stop, "target": target, "risk_distance": risk_distance,
+                                          "risk_amount": risk_amount, "quantity": qty, "opened_at": str(timestamp), "side": side,
+                                          "journal_context": dict(journal_context or {})}
+                    msg = f"Paper position opened at {entry:.2f}; no broker order was sent."
     state["last_action"] = str(timestamp)
     return msg
 

@@ -110,7 +110,7 @@ with st.sidebar:
     capital = st.number_input("Starting capital (simulation)", min_value=1000, max_value=1000000, value=10000, step=1000)
     st.caption("Fixed safety limits: 1% max risk · 1.5R minimum R:R · 1x max leverage · 30 minute cooldown")
 
-strategy_choice = st.radio("Strategy", ["AI Strategy", "Existing ICT Strategy", "Quant Strategy"],
+strategy_choice = st.radio("Strategy", ["Multi-Strategy Engine", "AI Strategy", "Existing ICT Strategy", "Quant Strategy"],
                             horizontal=True, key="strategy_choice")
 
 with st.expander("Strategy library · built-in plugins"):
@@ -120,7 +120,181 @@ with st.expander("Strategy library · built-in plugins"):
     for item in st.session_state.get("strategy_library", []):
         st.markdown(f"**{item['name']}** · `{item['market']} {item['timeframe']}` · v{item['version']} · saved {item['saved_at']}")
 
-if strategy_choice == "AI Strategy":
+if strategy_choice == "Multi-Strategy Engine":
+    st.subheader("Full Multi-Strategy Engine")
+    st.write("Runs the same finalized-candle strategy, regime, and scorer pipeline used by bot.py. ICT remains one of the strategies.")
+    st.caption("Analysis can be run at any time, 24/7. Confirmed signals still pass paper-account cooldown, daily limits, and risk checks before entry.")
+    run_multi_analysis = st.button("Analyze all strategies", type="primary", key="run_multi_strategy_analysis")
+    if run_multi_analysis:
+        try:
+            assert_demo_mode()
+            with st.spinner("Running the multi-strategy engine on finalized candles..."):
+                data_result = load_market_data(symbol, timeframe, 500)
+                show_market_data_status(data_result)
+                from bot import analyze_multi_strategy_candles
+
+                candles = [
+                    [int(timestamp.timestamp() * 1000), float(row.open), float(row.high),
+                     float(row.low), float(row.close), float(row.volume)]
+                    for timestamp, row in data_result.frame.iterrows()
+                ]
+                analysis = analyze_multi_strategy_candles(candles)
+            st.session_state.multi_strategy_analysis = analysis
+            st.session_state.multi_strategy_market = (symbol, timeframe, data_result.source)
+            st.session_state.multi_strategy_frame = data_result.frame.copy()
+            st.session_state.multi_strategy_candles = candles
+        except (MarketDataError, SafetyError, ValueError) as exc:
+            st.warning(str(exc))
+        except Exception:
+            LOGGER.exception("Multi-strategy engine analysis failed")
+            st.error("The multi-strategy analysis could not complete. Please try again.")
+
+    analysis = st.session_state.get("multi_strategy_analysis")
+    if analysis:
+        loaded_market, loaded_interval, loaded_source = st.session_state.get(
+            "multi_strategy_market", (symbol, timeframe, "Unknown source")
+        )
+        regime_data = analysis["regime"]
+        final_signal = analysis["final_signal"]
+        signals = analysis["signals"]
+        st.caption(f"Analyzed {loaded_market} · {loaded_interval} · {loaded_source} · finalized candles")
+        market_cols = st.columns(4)
+        market_cols[0].metric("Current price", f"${analysis['price']:,.4f}")
+        market_cols[1].metric("Market regime", regime_data.get("regime", "UNKNOWN"))
+        market_cols[2].metric("Regime score", regime_data.get("score", 0))
+        market_cols[3].metric("Regime reason", regime_data.get("reason", ""))
+
+        st.subheader("Strategy signals")
+        signal_rows = [
+            {"Strategy": name, "Signal": signal.get("side", "NEUTRAL"),
+             "Score": signal.get("score", 0), "Reason": signal.get("reason", "")}
+            for name, signal in signals.items()
+        ]
+        st.dataframe(pd.DataFrame(signal_rows), width="stretch", hide_index=True)
+
+        st.subheader("Signal aggregation and confirmation")
+        final_cols = st.columns(4)
+        final_cols[0].metric("Final signal", final_signal.get("side", "NEUTRAL"))
+        final_cols[1].metric("Final score", f"{float(final_signal.get('score', 0)):.2f}")
+        confirmation_points = final_signal.get("confirmation_points")
+        if confirmation_points is None:
+            confirmation_points = (
+                f"Long {final_signal.get('long_confirmation_points', 0)} · "
+                f"Short {final_signal.get('short_confirmation_points', 0)}"
+            )
+        final_cols[2].metric("Confirmation points", confirmation_points)
+        heavy_conditions = final_signal.get("heavy_conditions", [])
+        if not heavy_conditions:
+            heavy_conditions = sorted(set(
+                final_signal.get("long_heavy_conditions_list", [])
+                + final_signal.get("short_heavy_conditions_list", [])
+            ))
+        final_cols[3].metric("Heavy conditions", len(heavy_conditions))
+        st.write(f"**Final reason:** {final_signal.get('reason', 'No directional agreement among active strategies.')}")
+        st.write(f"**Heavy conditions:** {', '.join(heavy_conditions) if heavy_conditions else 'None'}")
+        confirm_cols = st.columns(2)
+        confirm_cols[0].metric("Normal confirmation", "Passed" if final_signal.get("normal_confirmation") else "Not passed")
+        confirm_cols[1].metric("Heavy confirmation", "Passed" if final_signal.get("heavy_confirmation") else "Not passed")
+
+        direction = final_signal.get("side")
+        if direction not in {"LONG", "SHORT"}:
+            st.error("TRADE BLOCKED: NO VALID DIRECTION")
+        elif not final_signal.get("confirmation_passed", False):
+            st.error("TRADE BLOCKED: INSUFFICIENT CONFIRMATION")
+            st.caption("Required: 4+ confirmation points OR 2 independent heavy conditions.")
+        else:
+            from config import NEWS_BLACKOUT, NEWS_FILTER_ENABLED
+            if NEWS_FILTER_ENABLED and NEWS_BLACKOUT:
+                st.error("TRADE BLOCKED: NEWS BLACKOUT ACTIVE")
+            else:
+                st.success("SIGNAL AND CONFIRMATION GATES PASSED · PAPER MODE ONLY")
+                st.caption("Before entry, the paper account applies cooldown, daily trade/loss limits, 1% risk, the default 2R target, and the 1x notional cap.")
+
+        paper_multi = st.button("Update multi-strategy paper account", key="update_multi_strategy_paper")
+        if paper_multi:
+            frame = st.session_state.get("multi_strategy_frame")
+            if frame is None or (loaded_market, loaded_interval) != (symbol, timeframe):
+                st.warning("Analyze the currently selected market and timeframe before updating this paper account.")
+            else:
+                from config import DEFAULT_RR, MAX_DAILY_LOSS_R, MAX_TRADES_PER_DAY, NEWS_BLACKOUT, NEWS_FILTER_ENABLED
+                from bot import build_multi_strategy_trade_levels
+                from demo_paper import advance_paper_account
+
+                state = get_paper_account("multi.strategy", capital, loaded_market, loaded_interval)
+                timestamp = frame.index[-1]
+                session_date = str(timestamp.date())
+                if state.get("daily_entry_date") != session_date:
+                    state["daily_entry_date"] = session_date
+                    state["daily_entry_count"] = 0
+                daily_r = 0.0
+                for trade in state.get("trades", []):
+                    try:
+                        closed_date = str(pd.Timestamp(trade["closed_at"]).date())
+                        risk_distance = float(trade.get("risk_distance", abs(float(trade["entry"])) * 0.01))
+                        risk = risk_distance * float(trade["quantity"])
+                        if closed_date == session_date and risk > 0:
+                            daily_r += float(trade["net_pnl"]) / risk
+                    except (KeyError, TypeError, ValueError):
+                        continue
+
+                final_side = final_signal.get("side")
+                confirmed = final_side in {"LONG", "SHORT"} and final_signal.get("confirmation_passed", False)
+                blocked_reason = None
+                if NEWS_FILTER_ENABLED and NEWS_BLACKOUT and state.get("position") is None:
+                    blocked_reason = "TRADE BLOCKED: NEWS BLACKOUT ACTIVE"
+                elif state.get("position") is None and not confirmed:
+                    blocked_reason = (
+                        "TRADE BLOCKED: INSUFFICIENT CONFIRMATION"
+                        if final_side in {"LONG", "SHORT"}
+                        else "TRADE BLOCKED: NO VALID DIRECTION"
+                    )
+                elif state.get("position") is None and state["daily_entry_count"] >= MAX_TRADES_PER_DAY:
+                    blocked_reason = "TRADE BLOCKED: MAX DAILY TRADES REACHED"
+                elif state.get("position") is None and daily_r <= -abs(MAX_DAILY_LOSS_R):
+                    blocked_reason = "TRADE BLOCKED: MAX DAILY LOSS REACHED"
+
+                approved_side = final_side if confirmed and blocked_reason is None else "NEUTRAL"
+                entry_levels = None
+                if approved_side in {"LONG", "SHORT"} and state.get("position") is None:
+                    try:
+                        entry_levels = build_multi_strategy_trade_levels(
+                            st.session_state.multi_strategy_candles, approved_side
+                        )
+                    except (TypeError, ValueError, KeyError) as exc:
+                        blocked_reason = f"TRADE BLOCKED: {exc}"
+                        approved_side = "NEUTRAL"
+                side_series = pd.Series("NEUTRAL", index=frame.index, dtype="object")
+                side_series.iloc[-1] = "BUY" if approved_side == "LONG" else "SELL" if approved_side == "SHORT" else "NEUTRAL"
+                was_flat = state.get("position") is None
+                result = advance_paper_account(
+                    frame,
+                    {"side": "BUY", "entry": [], "exit": [], "risk_fraction": 0.01,
+                     "rr": DEFAULT_RR, "leverage": 1.0},
+                    state,
+                    signal_sides=side_series,
+                    journal_context={
+                        "strategy_id": "multi.strategy", "market": loaded_market,
+                        "timeframe": loaded_interval, "data_source": loaded_source,
+                        "entry_rules": "Existing bot.py multi-strategy scorer; 4+ points OR 2 heavy conditions",
+                        "market_context": f"regime={regime_data.get('regime', 'UNKNOWN')}; score={final_signal.get('score', 0)}",
+                    },
+                    entry_levels=entry_levels,
+                )
+                if was_flat and state.get("position") is not None:
+                    state["daily_entry_count"] += 1
+                if blocked_reason and was_flat:
+                    st.error(blocked_reason)
+                else:
+                    st.info(result)
+                paper_cols = st.columns(3)
+                paper_cols[0].metric("Multi-strategy paper balance", f"${state['balance']:,.2f}")
+                paper_cols[1].metric("Open position", "Yes" if state.get("position") else "No")
+                paper_cols[2].metric("Closed trades", len(state.get("trades", [])))
+                if state.get("position"):
+                    st.json(state["position"])
+                show_paper_journal(state, "multi_strategy")
+
+elif strategy_choice == "AI Strategy":
     st.subheader("1 · Describe or speak a strategy")
     st.caption("Use everyday English, Hindi, or Hinglish. Voice works in browsers that support microphone speech recognition.")
     if "strategy_text" not in st.session_state:
@@ -330,7 +504,7 @@ elif strategy_choice == "Existing ICT Strategy":
     st.info("Valid ICT setups are evaluated 24 hours a day. The configured news blackout, cooldown, and fixed risk limits remain active.")
     current_ist = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
     st.caption(f"Current time: {current_ist}")
-    st.caption("This preserves the existing ICT signal implementation. Its original command-line multi-strategy engine is not executed by the public demo.")
+    st.caption("This runs ICT independently. Select Multi-Strategy Engine to score ICT alongside the other existing strategies.")
     ict_buttons = st.columns(3)
     run_ict = ict_buttons[0].button("Check latest ICT signal", type="primary", width="stretch")
     backtest_ict = ict_buttons[1].button("Backtest ICT", width="stretch")

@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 import requests
+import streamlit as st
 from streamlit.testing.v1 import AppTest
 
 import demo_data
@@ -110,10 +111,11 @@ class MarketDataFallbackTests(unittest.TestCase):
 
     def test_ui_shows_backup_notice_and_active_source_after_readonly_ict_check(self):
         result = MarketDataResult(self.sample_frame(), "Bundled historical sample (not live)", True)
+        st.cache_data.clear()
         with patch("demo_data.fetch_market_data", return_value=result):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
             app.radio[0].set_value("Existing ICT Strategy").run()
-            app.button[0].click().run()
+            next(button for button in app.button if button.label == "Check latest ICT signal").click().run()
         self.assertFalse(list(app.exception))
         self.assertIn("Using backup data source", [item.value for item in app.info])
         self.assertTrue(any("Bundled historical sample (not live)" in item.value for item in app.caption))
@@ -121,6 +123,7 @@ class MarketDataFallbackTests(unittest.TestCase):
 
     def test_quant_strategy_runs_through_streamlit_backtest_flow(self):
         result = MarketDataResult(self.sample_frame(limit=500), "Bundled historical sample (not live)", True)
+        st.cache_data.clear()
         with patch("demo_data.fetch_market_data", return_value=result):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
             app.radio[0].set_value("Quant Strategy").run()
@@ -131,8 +134,10 @@ class MarketDataFallbackTests(unittest.TestCase):
 
     def test_custom_strategy_review_code_and_version_workflow(self):
         result = MarketDataResult(self.sample_frame(limit=500), "Bundled historical sample (not live)", True)
+        st.cache_data.clear()
         with patch("demo_data.fetch_market_data", return_value=result):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.radio[0].set_value("AI Strategy").run()
             next(button for button in app.button if button.label == "Example 1").click().run()
             rules = next(item for item in app.text_area if item.key == "strategy_rules_json")
             rules.set_value(
@@ -149,12 +154,13 @@ class MarketDataFallbackTests(unittest.TestCase):
         self.assertFalse(list(app.exception))
 
     def test_no_provider_failure_crashes_the_streamlit_ict_flow(self):
+        st.cache_data.clear()
         with patch("demo_data._fetch_binance_ohlcv", side_effect=RuntimeError("blocked")), \
              patch("demo_data._fetch_coinbase_ohlcv", side_effect=RuntimeError("offline")), \
              self.assertLogs("ict_demo.market_data", level="ERROR"):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
             app.radio[0].set_value("Existing ICT Strategy").run()
-            app.button[0].click().run()
+            next(button for button in app.button if button.label == "Check latest ICT signal").click().run()
         self.assertFalse(list(app.exception))
         self.assertIn("Using backup data source", [item.value for item in app.info])
         self.assertTrue(any("Bundled historical sample (not live)" in item.value for item in app.caption))

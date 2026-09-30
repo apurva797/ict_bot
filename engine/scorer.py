@@ -454,6 +454,8 @@ def _no_trade_result(
 
         "long_heavy_conditions": len(long_heavy),
         "short_heavy_conditions": len(short_heavy),
+        "long_heavy_conditions_list": long_heavy,
+        "short_heavy_conditions_list": short_heavy,
 
         "confirmation_passed": False,
 

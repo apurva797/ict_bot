@@ -118,6 +118,7 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
 
     def test_streamlit_builder_shows_clarification_instead_of_generic_rejection(self):
         app = AppTest.from_file(str(ROOT / "app.py")).run()
+        app.radio[0].set_value("AI Strategy").run()
         next(item for item in app.text_area if item.key == "strategy_text").set_value(
             "Liquidity sweep ke baad short"
         ).run()
@@ -130,6 +131,7 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
 
     def test_streamlit_confirmation_displays_requested_one_point_five_r(self):
         app = AppTest.from_file(str(ROOT / "app.py")).run()
+        app.radio[0].set_value("AI Strategy").run()
         next(item for item in app.text_area if item.key == "strategy_text").set_value(
             "RSI 30 ke neeche buy target 1.5R"
         ).run()
@@ -140,6 +142,7 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
 
     def test_editing_description_invalidates_old_confirmation_before_execution(self):
         app = AppTest.from_file(str(ROOT / "app.py")).run()
+        app.radio[0].set_value("AI Strategy").run()
         next(item for item in app.text_area if item.key == "strategy_text").set_value("RSI 30 ke neeche buy").run()
         next(item for item in app.button if item.label == "Generate strategy").click().run()
         self.assertTrue(any(item.label == "Backtest" for item in app.button))
