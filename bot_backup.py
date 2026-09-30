@@ -582,14 +582,6 @@ def analyze_market():
         "CURRENT DECISION:"
     )
 
-    if not kill_zone:
-
-        print(
-            "NO TRADE - Outside kill zone."
-        )
-
-        return None
-
     # -----------------------------------------------------
     # LONG
     # -----------------------------------------------------
@@ -832,7 +824,7 @@ def main():
     )
 
     print(
-        "Trading: Kill zones only"
+        "Trading: Valid ICT setups, 24 hours"
     )
 
     while True:

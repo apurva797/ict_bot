@@ -1103,10 +1103,13 @@ def run_analysis():
 
         return
 
-    # The existing ICT logic is only eligible during its UTC kill zones.
+    # Outside Kill Zones, retain the existing gate for non-ICT signals. A valid
+    # ICT signal aligned with the final direction may enter when the filter is off.
     utc_hour = datetime.now(timezone.utc).hour
-    if not (7 <= utc_hour < 10 or 12 <= utc_hour < 15):
-        print("\nTRADE BLOCKED: outside London/New York kill zones (UTC)")
+    in_kill_zone = 7 <= utc_hour < 10 or 12 <= utc_hour < 15
+    ict_side = signals.get("ICT", {}).get("side")
+    if not in_kill_zone and ict_side != final_side:
+        print("\nTRADE BLOCKED: outside London/New York kill zones (UTC); no aligned ICT setup")
         return
 
     # ========================================================

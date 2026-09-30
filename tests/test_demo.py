@@ -1,13 +1,14 @@
 import ast
 import pathlib
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 import pandas as pd
 
 from demo_backtest import run_backtest, run_ict_backtest
 from demo_data import MarketDataError, validate_ohlcv
-from demo_paper import advance_paper_account
+from demo_paper import advance_ict_paper_account, advance_paper_account
 from engine.paper import PaperTrader
 from demo_safety import SafetyError, ict_entry_gate, reject_live_order, validate_risk_controls
 from demo_strategy import EXAMPLES, StrategyError, parse_strategy, parse_strategy_json, validate_strategy
@@ -76,9 +77,46 @@ class DemoSafetyTests(unittest.TestCase):
         good, _ = ict_entry_gate(pd.Timestamp("2026-09-30 08:00", tz="UTC"), news_blackout=False)
         self.assertTrue(good)
         self.assertFalse(ict_entry_gate(pd.Timestamp("2026-09-30 08:00", tz="UTC"), news_blackout=True)[0])
-        self.assertFalse(ict_entry_gate(pd.Timestamp("2026-09-30 11:00", tz="UTC"))[0])
+        self.assertTrue(ict_entry_gate(pd.Timestamp("2026-09-30 11:00", tz="UTC"))[0])
+        self.assertTrue(ict_entry_gate(pd.Timestamp("2026-09-30 00:00", tz="UTC"))[0])
+        self.assertTrue(ict_entry_gate(pd.Timestamp("2026-09-30 23:59", tz="UTC"))[0])
         t = pd.Timestamp("2026-09-30 08:00", tz="UTC")
         self.assertFalse(ict_entry_gate(t + pd.Timedelta(minutes=10), last_trade_at=t)[0])
+
+    def test_valid_ict_setup_outside_kill_zones_can_open_paper_entry(self):
+        frame = self.candles(120)
+        frame.index = pd.date_range(
+            end=pd.Timestamp("2026-09-30 03:30", tz="UTC"),
+            periods=len(frame),
+            freq="5min",
+        )
+        state = {"balance": 10_000.0, "position": None, "trades": [], "last_action": None}
+        with patch(
+            "strategies.ict.ict_signal",
+            return_value={"side": "LONG", "score": 75, "reason": "valid ICT setup"},
+        ):
+            message = advance_ict_paper_account(frame, state, news_blackout=False)
+
+        self.assertIsNotNone(state["position"])
+        self.assertEqual(state["position"]["side"], "LONG")
+        self.assertIn("paper position opened", message)
+
+    def test_no_valid_ict_setup_does_not_force_a_paper_entry(self):
+        frame = self.candles(120)
+        frame.index = pd.date_range(
+            end=pd.Timestamp("2026-09-30 03:30", tz="UTC"),
+            periods=len(frame),
+            freq="5min",
+        )
+        state = {"balance": 10_000.0, "position": None, "trades": [], "last_action": None}
+        with patch(
+            "strategies.ict.ict_signal",
+            return_value={"side": "NEUTRAL", "score": 20, "reason": "no aligned setup"},
+        ):
+            message = advance_ict_paper_account(frame, state, news_blackout=False)
+
+        self.assertIsNone(state["position"])
+        self.assertEqual(message, "No ICT paper entry: No valid ICT setup.")
 
     def test_paper_cooldown_prevents_reentry(self):
         rows = []

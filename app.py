@@ -2,6 +2,8 @@
 
 import logging
 import os
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import streamlit as st
@@ -139,7 +141,9 @@ if strategy_choice == "AI Strategy":
 else:
     st.subheader("Existing ICT Strategy")
     st.write("Uses the project's existing liquidity sweep, displacement, market structure shift, fair value gap, order block, and higher-timeframe bias logic.")
-    st.info("ICT entries are restricted to the London (07:00–10:00 UTC) and New York (12:00–15:00 UTC) windows. The configured news blackout blocks entries. Cooldown and fixed risk limits remain active.")
+    st.info("Valid ICT setups are evaluated 24 hours a day. The configured news blackout, cooldown, and fixed risk limits remain active.")
+    current_ist = datetime.now(ZoneInfo("Asia/Kolkata")).strftime("%Y-%m-%d %H:%M:%S IST")
+    st.caption(f"Current time: {current_ist}")
     st.caption("This preserves the existing ICT signal implementation. Its original command-line multi-strategy engine is not executed by the public demo.")
     ict_buttons = st.columns(3)
     run_ict = ict_buttons[0].button("Check latest ICT signal", type="primary", width="stretch")
@@ -170,7 +174,7 @@ else:
                     col.metric(name, label)
                 st.line_chart(equity["equity"], height=270)
                 st.dataframe(trades, width="stretch", hide_index=True)
-                st.caption("Finalized-candle ICT signals fill at the next candle open. Kill zones, news blackout, cooldown, fixed 1% risk, 2R target and 1x notional cap apply.")
+                st.caption("Finalized-candle ICT signals fill at the next candle open. 24-hour evaluation, news blackout, cooldown, fixed 1% risk, 2R target and 1x notional cap apply.")
             if paper_ict:
                 state = st.session_state.setdefault("ict_paper_account", {"balance": float(capital), "position": None, "trades": [], "last_action": None})
                 if state.get("starting_capital") != float(capital):

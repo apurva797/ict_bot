@@ -2,7 +2,6 @@
 
 import os
 
-
 DEMO_MODE = True  # Deliberately constant: no UI or environment override exists.
 LIVE_ORDERS_ENABLED = False
 MAX_RISK_FRACTION = 0.01
@@ -37,16 +36,13 @@ def reject_live_order(*_args, **_kwargs):
 
 
 def ict_entry_gate(timestamp, news_blackout=False, last_trade_at=None):
-    """Validate the ICT-only time/news gates; returns (allowed, explanation)."""
+    """Validate ICT news/cooldown gates; ICT entries are eligible 24/7."""
     assert_demo_mode()
     if news_blackout:
         return False, "Configured news blackout is active."
-    hour = timestamp.hour
-    if not (7 <= hour < 10 or 12 <= hour < 15):
-        return False, "Outside London and New York kill zones (UTC)."
     if last_trade_at is not None and (timestamp - last_trade_at).total_seconds() < COOLDOWN_MINUTES * 60:
         return False, "30 minute cooldown is active."
-    return True, "ICT time and news gates passed."
+    return True, "ICT entry gates passed."
 
 
 def has_optional_llm_key():

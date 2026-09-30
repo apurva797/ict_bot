@@ -87,7 +87,11 @@ def advance_ict_paper_account(frame, state, news_blackout=False):
     signal_side = signal_result.get("side") if isinstance(signal_result, dict) else "NEUTRAL"
     allowed, gate_reason = ict_entry_gate(timestamp, news_blackout=news_blackout, last_trade_at=state.get("last_closed_at"))
     position = state["position"]
-    msg = f"No ICT paper entry: {gate_reason}" if not allowed else "ICT conditions are neutral; no paper entry."
+    msg = (
+        f"No ICT paper entry: {gate_reason}"
+        if not allowed
+        else "No ICT paper entry: No valid ICT setup."
+    )
     close = float(frame.close.iloc[-1])
     if position:
         side = position["side"]
