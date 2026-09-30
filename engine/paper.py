@@ -129,7 +129,7 @@ class PaperTrader:
         else:
             risk_distance = stop - entry
             reward_distance = entry - target
-        if risk_distance <= 0 or reward_distance / risk_distance < 2.0:
+        if risk_distance <= 0 or reward_distance / risk_distance < 1.5:
             return False
 
         if risk_amount is None:

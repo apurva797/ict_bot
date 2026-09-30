@@ -108,7 +108,7 @@ with st.sidebar:
     symbol = st.selectbox("Market", ["BTC/USDT", "ETH/USDT", "SOL/USDT"])
     timeframe = st.selectbox("Candle interval", ["1h", "15m", "5m"])
     capital = st.number_input("Starting capital (simulation)", min_value=1000, max_value=1000000, value=10000, step=1000)
-    st.caption("Fixed safety limits: 1% max risk · 2.0 minimum R:R · 1x max leverage · 30 minute cooldown")
+    st.caption("Fixed safety limits: 1% max risk · 1.5R minimum R:R · 1x max leverage · 30 minute cooldown")
 
 strategy_choice = st.radio("Strategy", ["AI Strategy", "Existing ICT Strategy", "Quant Strategy"],
                             horizontal=True, key="strategy_choice")
@@ -218,7 +218,7 @@ if strategy_choice == "AI Strategy":
         confirmation_cols[1].metric("Target", f"{candidate.get('rr', 2.0):g}R")
         confirmation_cols[2].metric("Session", "24H")
         confirmation_cols[3].metric("Mode", "Paper Trading")
-        st.caption("The fixed demo limit remains 1% risk, minimum 2R, maximum 1x leverage. No live orders.")
+        st.caption("The fixed demo limit is 1% risk, minimum 1.5R, maximum 1x leverage. No live orders.")
     if strategy:
         st.subheader("Validated strategy rules")
         strategy_symbol = interpretation.symbol if interpretation and interpretation.symbol else symbol
@@ -361,7 +361,7 @@ elif strategy_choice == "Existing ICT Strategy":
                 st.line_chart(equity["equity"], height=270)
                 st.dataframe(trades, width="stretch", hide_index=True)
                 show_additional_metrics(metrics)
-                st.caption("Finalized-candle ICT signals fill at the next candle open. 24-hour evaluation, news blackout, cooldown, fixed 1% risk, 2R target and 1x notional cap apply.")
+                st.caption("Finalized-candle ICT signals fill at the next candle open. 24-hour evaluation, news blackout, cooldown, fixed 1% risk, default 2R target (minimum 1.5R) and 1x notional cap apply.")
             if paper_ict:
                 state = get_paper_account("ict", capital, symbol, timeframe)
                 st.subheader("ICT PAPER TRADING")
@@ -434,7 +434,7 @@ else:
                 st.line_chart(equity["equity"], height=270)
                 st.dataframe(trades, width="stretch", hide_index=True)
                 show_additional_metrics(metrics)
-                st.caption("Signals use finalized candles and next-candle-open fills, 0.01% slippage, 0.04% fees, 1% risk, 2R target, 1x notional cap, 30-minute cooldown, and conservative stop-first intrabar handling.")
+                st.caption("Signals use finalized candles and next-candle-open fills, 0.01% slippage, 0.04% fees, 1% risk, default 2R target (minimum 1.5R), 1x notional cap, 30-minute cooldown, and conservative stop-first intrabar handling.")
             if paper_quant:
                 state = get_paper_account(plugin_id, capital, symbol, timeframe)
                 quant_context = {"strategy_id": plugin_id, "strategy_version": plugin.metadata.version, "market": symbol,

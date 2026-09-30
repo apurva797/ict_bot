@@ -163,7 +163,7 @@ class MarketDataFallbackTests(unittest.TestCase):
         self.assertTrue(DEMO_MODE)
         self.assertFalse(LIVE_ORDERS_ENABLED)
         self.assertEqual(MAX_RISK_FRACTION, 0.01)
-        self.assertEqual(MIN_RISK_REWARD, 2.0)
+        self.assertEqual(MIN_RISK_REWARD, 1.5)
         self.assertEqual(MAX_LEVERAGE, 1.0)
 
     def test_streamlit_app_has_no_broker_credential_inputs(self):

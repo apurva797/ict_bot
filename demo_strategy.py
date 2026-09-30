@@ -117,8 +117,8 @@ def validate_strategy(obj) -> StrategySpecification:
             raise StrategyError(f"Invalid {field} value.")
         if field == "risk_fraction" and (value <= 0 or value > maximum):
             raise StrategyError("Strategy rejected because requested risk exceeds the 1% demo safety limit.")
-        if field == "rr" and value < 2:
-            raise StrategyError("Strategy rejected because requested risk/reward is below 2.0.")
+        if field == "rr" and value < 1.5:
+            raise StrategyError("Strategy rejected because requested risk/reward is below 1.5R.")
         if field == "leverage" and (value <= 0 or value > maximum):
             raise StrategyError("Strategy rejected because requested leverage exceeds the 1x demo safety limit.")
         normalized[field] = float(value)
@@ -340,8 +340,8 @@ def interpret_strategy(text):
                 side = _infer_side(text)
                 draft = {"side": side, "entry": [], "exit": [], **preferences} if preferences else None
                 limitations = []
-                if preferences.get("rr", 2.0) < 2.0:
-                    limitations.append("The existing ICT engine enforces a minimum 2R target.")
+                if preferences.get("rr", 2.0) < 1.5:
+                    limitations.append("The existing ICT engine enforces a minimum 1.5R target.")
                 if re.search(r"\b(sl|stop\s*loss|stoploss)\b", lowered):
                     limitations.append("The existing ICT engine uses its fixed 1% price-risk stop, not a custom swing stop.")
                 limitation = " ".join(limitations) or None
@@ -391,8 +391,8 @@ def interpret_strategy(text):
         )
     if re.search(r"liquidity|sweep|fvg|fair value gap|order block|\bmss\b|market structure|bearish reversal|bullish reversal|displacement", lowered):
         limitations = []
-        if draft.get("rr", 2.0) < 2.0:
-            limitations.append("The existing ICT engine enforces a minimum 2R target.")
+        if draft.get("rr", 2.0) < 1.5:
+            limitations.append("The existing ICT engine enforces a minimum 1.5R target.")
         if re.search(r"\b(sl|stop\s*loss|stoploss)\b", lowered):
             limitations.append("The existing ICT engine uses its fixed 1% price-risk stop, not a custom swing stop.")
         limitation = " ".join(limitations) or None

@@ -5,7 +5,7 @@ import os
 DEMO_MODE = True  # Deliberately constant: no UI or environment override exists.
 LIVE_ORDERS_ENABLED = False
 MAX_RISK_FRACTION = 0.01
-MIN_RISK_REWARD = 2.0
+MIN_RISK_REWARD = 1.5
 MAX_LEVERAGE = 1.0
 COOLDOWN_MINUTES = 30
 
@@ -24,7 +24,7 @@ def validate_risk_controls(risk_fraction=0.01, rr=2.0, leverage=1.0):
     if risk_fraction > MAX_RISK_FRACTION or risk_fraction <= 0:
         raise SafetyError("Strategy rejected because risk exceeds the 1% demo limit.")
     if rr < MIN_RISK_REWARD:
-        raise SafetyError("Strategy rejected because minimum risk/reward is 2.0.")
+        raise SafetyError("Strategy rejected because minimum risk/reward is 1.5R.")
     if leverage > MAX_LEVERAGE or leverage <= 0:
         raise SafetyError("Strategy rejected because leverage exceeds the 1x demo limit.")
 

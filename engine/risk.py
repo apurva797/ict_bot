@@ -186,7 +186,7 @@ def validate_trade(
         side
     )
 
-    if rr < (min_rr - 0.0001):
+    if rr < min_rr:
         return False, rr, "R:R below minimum"
 
     if side == "LONG":

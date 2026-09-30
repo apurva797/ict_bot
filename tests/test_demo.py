@@ -12,6 +12,7 @@ from demo_paper import advance_ict_paper_account, advance_paper_account
 from engine.paper import PaperTrader
 from demo_safety import SafetyError, ict_entry_gate, reject_live_order, validate_risk_controls
 from demo_strategy import EXAMPLES, StrategyError, parse_strategy, parse_strategy_json, validate_strategy
+from engine.risk import validate_trade
 
 
 class DemoSafetyTests(unittest.TestCase):
@@ -37,12 +38,18 @@ class DemoSafetyTests(unittest.TestCase):
             validate_strategy({"entry": [], "exit": []})
 
     def test_risk_rr_and_leverage_limits(self):
-        for values in ({"risk_fraction": .011}, {"rr": 1.99}, {"leverage": 1.01}):
+        for values in ({"risk_fraction": .011}, {"rr": 1.49}, {"leverage": 1.01}):
             with self.assertRaises(StrategyError):
                 validate_strategy({"entry": [{"indicator": "price", "operator": ">", "value": 1}], "exit": [{"indicator": "price", "operator": ">", "value": 1}], **values})
-        for args in ((.011, 2, 1), (.01, 1.99, 1), (.01, 2, 1.01)):
+        for args in ((.011, 2, 1), (.01, 1.49, 1), (.01, 2, 1.01)):
             with self.assertRaises(SafetyError):
                 validate_risk_controls(*args)
+        for rr in (1.5, 1.75, 2, 2.5, 3):
+            validate_risk_controls(.01, rr, 1)
+            accepted, actual_rr, _ = validate_trade(100, 99, 100 + rr, "LONG")
+            self.assertTrue(accepted)
+            self.assertEqual(actual_rr, rr)
+        self.assertFalse(validate_trade(100, 99, 101.4999, "LONG")[0])
 
     def test_live_orders_hard_blocked(self):
         with self.assertRaises(SafetyError):
@@ -51,11 +58,15 @@ class DemoSafetyTests(unittest.TestCase):
     def test_existing_paper_engine_enforces_risk_rr_and_leverage(self):
         trader = PaperTrader(starting_balance=10_000)
         self.assertFalse(trader.open_position("LONG", 100, 99, 101, risk_amount=100, quantity=50))
-        self.assertFalse(trader.open_position("LONG", 100, 99, 101.99, risk_amount=100, quantity=50))
         self.assertFalse(trader.open_position("LONG", 100, 99, 102, risk_amount=101, quantity=50))
         self.assertFalse(trader.open_position("LONG", 100, 99, 102, risk_amount=100, quantity=101))
-        self.assertTrue(trader.open_position("LONG", 100, 99, 102, risk_amount=100, quantity=50))
+        self.assertTrue(trader.open_position("LONG", 100, 99, 101.5, risk_amount=100, quantity=50))
         self.assertLessEqual(trader.position["notional"], trader.balance)
+
+    def test_paper_engine_rejects_only_rr_values_below_one_point_five(self):
+        for rr in (1.0, 1.25, 1.49):
+            trader = PaperTrader(starting_balance=10_000)
+            self.assertFalse(trader.open_position("LONG", 100, 99, 100 + rr, risk_amount=100, quantity=50))
 
     def test_ai_output_has_no_code_or_tool_fields(self):
         strategy = parse_strategy(EXAMPLES[0])

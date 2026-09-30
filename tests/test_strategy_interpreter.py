@@ -58,17 +58,32 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
                              index=pd.date_range("2026-01-01", periods=3, freq="h", tz="UTC"))
         self.assertEqual(len(evaluate_conditions(frame, result.specification["entry"])), 3)
 
-    def test_risk_and_target_are_understood_but_safety_limit_is_not_weakened(self):
+    def test_risk_and_target_accept_minimum_and_preserve_default(self):
         result = interpret_strategy("RSI 30 ke neeche buy, 1 percent risk aur 1.5R target")
-        self.assertIsNone(result.specification)
+        self.assertIsNotNone(result.specification)
         self.assertEqual(result.draft["risk_fraction"], 0.01)
         self.assertEqual(result.draft["rr"], 1.5)
-        self.assertIn("below 2.0", result.validation_message)
+        self.assertEqual(result.specification["rr"], 1.5)
         rr_notation = interpret_strategy("RSI 30 ke neeche buy with 1 percent risk and R:R 2")
         self.assertEqual(rr_notation.draft["rr"], 2)
+        self.assertEqual(rr_notation.specification["rr"], 2)
         lower_risk = interpret_strategy("RSI 30 ke neeche buy with 0.5 percent risk and 2R target")
         self.assertEqual(lower_risk.specification["risk_fraction"], 0.005)
         self.assertEqual(lower_risk.specification["rr"], 2)
+
+    def test_rr_boundary_accepts_one_point_five_and_higher(self):
+        for rr in (1.5, 1.75, 2, 2.5, 3):
+            with self.subTest(rr=rr):
+                result = interpret_strategy(f"RSI 30 ke neeche buy target {rr}R")
+                self.assertIsNotNone(result.specification)
+                self.assertEqual(result.specification["rr"], rr)
+
+    def test_rr_below_one_point_five_is_rejected(self):
+        for rr in (1.0, 1.25, 1.49):
+            with self.subTest(rr=rr):
+                result = interpret_strategy(f"RSI 30 ke neeche buy target {rr}R")
+                self.assertIsNone(result.specification)
+                self.assertIn("below 1.5R", result.validation_message)
 
     def test_macd_zero_line_is_a_deterministic_supported_condition(self):
         result = interpret_strategy("Buy when MACD crosses above zero")
@@ -84,7 +99,7 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
         self.assertIn("Which confirmation", result.clarification)
         self.assertTrue(result.suggestions)
 
-    def test_ict_custom_stop_and_below_minimum_target_are_reported(self):
+    def test_ict_custom_stop_is_reported_without_rejecting_one_point_five_r(self):
         result = interpret_strategy(
             "BTC 15m me previous high sweep karke bearish reversal ho to short, "
             "SL sweep ke upar aur target 1.5R"
@@ -93,7 +108,6 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
         self.assertEqual(result.timeframe, "15m")
         self.assertEqual(result.draft["side"], "SELL")
         self.assertEqual(result.draft["rr"], 1.5)
-        self.assertIn("minimum 2R", result.validation_message)
         self.assertIn("custom swing stop", result.validation_message)
 
     def test_voice_transcript_flows_through_the_same_interpreter(self):
@@ -113,6 +127,16 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
         next(item for item in app.button if item.label == "Open Existing ICT Strategy").click().run()
         self.assertFalse(list(app.exception))
         self.assertEqual(app.radio[0].value, "Existing ICT Strategy")
+
+    def test_streamlit_confirmation_displays_requested_one_point_five_r(self):
+        app = AppTest.from_file(str(ROOT / "app.py")).run()
+        next(item for item in app.text_area if item.key == "strategy_text").set_value(
+            "RSI 30 ke neeche buy target 1.5R"
+        ).run()
+        next(item for item in app.button if item.label == "Generate strategy").click().run()
+        self.assertFalse(list(app.exception))
+        target = next(item for item in app.metric if item.label == "Target")
+        self.assertEqual(target.value, "1.5R")
 
     def test_editing_description_invalidates_old_confirmation_before_execution(self):
         app = AppTest.from_file(str(ROOT / "app.py")).run()
