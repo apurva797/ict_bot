@@ -20,6 +20,19 @@ class MarketDataFallbackTests(unittest.TestCase):
     def sample_frame(self, symbol="BTC/USDT", timeframe="1h", limit=250):
         return demo_data._load_sample_ohlcv(symbol, timeframe, limit)
 
+    def test_market_data_result_import_and_fetch_return_contract(self):
+        self.assertIs(MarketDataResult, demo_data.MarketDataResult)
+        frame = self.sample_frame()
+        with patch("demo_data._fetch_binance_ohlcv", return_value=frame):
+            result = fetch_market_data("BTC/USDT", "1h", 250)
+
+        self.assertIsInstance(result, MarketDataResult)
+        self.assertIs(result.frame, frame)
+        self.assertEqual(result.source, "Binance public OHLCV")
+        self.assertFalse(result.used_fallback)
+        self.assertEqual(list(result.frame.columns), ["open", "high", "low", "close", "volume"])
+        self.assertEqual(str(result.frame.index.tz), "UTC")
+
     def test_binance_success_is_selected_without_calling_backup(self):
         frame = self.sample_frame()
         with patch("demo_data._fetch_binance_ohlcv", return_value=frame) as primary, \
