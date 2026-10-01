@@ -2,12 +2,19 @@
 
 import os
 
+from config import (
+    COOLDOWN_MINUTES,
+    MAX_LEVERAGE,
+    MIN_RR,
+    PAPER_TRADING,
+    RISK_PER_TRADE,
+)
+
 DEMO_MODE = True  # Deliberately constant: no UI or environment override exists.
 LIVE_ORDERS_ENABLED = False
-MAX_RISK_FRACTION = 0.01
-MIN_RISK_REWARD = 1.5
-MAX_LEVERAGE = 1.0
-COOLDOWN_MINUTES = 30
+MAX_RISK_FRACTION = RISK_PER_TRADE
+MIN_RISK_REWARD = MIN_RR
+EXECUTION_ENVIRONMENT = "PAPER"
 
 
 class SafetyError(ValueError):
@@ -36,13 +43,18 @@ def reject_live_order(*_args, **_kwargs):
 
 
 def ict_entry_gate(timestamp, news_blackout=False, last_trade_at=None):
-    """Validate ICT news/cooldown gates; ICT entries are eligible 24/7."""
+    """Validate the ICT entry gates.
+
+    ICT paper trading is evaluated and eligible 24 hours a day. Only the
+    configured news blackout and the cooldown can block an entry; the time of
+    day (London and New York kill zones) is deliberately NOT a gate.
+    """
     assert_demo_mode()
     if news_blackout:
         return False, "Configured news blackout is active."
     if last_trade_at is not None and (timestamp - last_trade_at).total_seconds() < COOLDOWN_MINUTES * 60:
-        return False, "30 minute cooldown is active."
-    return True, "ICT entry gates passed."
+        return False, f"{COOLDOWN_MINUTES} minute cooldown is active."
+    return True, "ARJUNA entry gates passed: 24/7 evaluation, news and cooldown clear."
 
 
 def has_optional_llm_key():

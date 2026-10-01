@@ -104,7 +104,7 @@ class DemoSafetyTests(unittest.TestCase):
         state = {"balance": 10_000.0, "position": None, "trades": [], "last_action": None}
         with patch(
             "strategies.ict.ict_signal",
-            return_value={"side": "LONG", "score": 75, "reason": "valid ICT setup"},
+            return_value={"side": "LONG", "score": 75, "reason": "valid ARJUNA setup"},
         ):
             message = advance_ict_paper_account(frame, state, news_blackout=False)
 
@@ -127,7 +127,7 @@ class DemoSafetyTests(unittest.TestCase):
             message = advance_ict_paper_account(frame, state, news_blackout=False)
 
         self.assertIsNone(state["position"])
-        self.assertEqual(message, "No ICT paper entry: No valid ICT setup.")
+        self.assertEqual(message, "No ARJUNA paper entry: No valid ARJUNA setup.")
 
     def test_paper_cooldown_prevents_reentry(self):
         rows = []

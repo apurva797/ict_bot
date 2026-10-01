@@ -68,6 +68,28 @@ from engine.paper import PaperTrader
 from demo_safety import DEMO_MODE, LIVE_ORDERS_ENABLED, assert_demo_mode
 from demo_data import validate_ohlcv
 
+MULTI_STRATEGY_FUNCTIONS = (
+    ("TREND", "trend_signal"),
+    ("MOMENTUM", "momentum_signal"),
+    ("VOLATILITY", "volatility_signal"),
+    ("BREAKOUT", "breakout_signal"),
+    ("VWAP", "vwap_signal"),
+    ("VOLUME", "volume_signal"),
+    ("PRICE_ACTION", "price_action_signal"),
+    ("MEAN_REVERSION", "mean_reversion_signal"),
+    ("ICT", "ict_signal"),
+    ("WYCKOFF", "wyckoff_signal"),
+    ("KAMA", "kama_signal"),
+    ("DONCHIAN", "donchian_signal"),
+    ("DIVERGENCE", "divergence_signal"),
+    ("CAMBRIDGE_HOOK", "cambridge_hook_signal"),
+)
+
+
+def multi_strategy_names():
+    """Return the engine's current strategy keys, including its crypto signal."""
+    return tuple(name for name, _ in MULTI_STRATEGY_FUNCTIONS) + ("CRYPTO",)
+
 
 # ============================================================
 # BOT CONFIG
@@ -489,52 +511,55 @@ def safe_strategy_call(
         }
 
 
-def analyze_multi_strategy_candles(candles):
-    """Run the existing regime, strategy, and aggregation pipeline on finalized OHLCV."""
+def analyze_multi_strategy_candles(candles, strategy_selection=None, historical=False):
+    """Run the existing regime, strategy, and aggregation pipeline on finalized OHLCV.
+
+    Historical callers can suppress the live funding/open-interest request. The
+    CRYPTO slot remains present but neutral unless a historical series is added.
+    """
     if candles is None or len(candles) < 2:
         raise ValueError("At least two finalized candles are required for multi-strategy analysis.")
 
     price = float(candles[-1][4])
     regime_data = detect_regime(candles)
     regime = regime_data.get("regime", "UNKNOWN")
-    strategy_functions = (
-        ("TREND", trend_signal),
-        ("MOMENTUM", momentum_signal),
-        ("VOLATILITY", volatility_signal),
-        ("BREAKOUT", breakout_signal),
-        ("VWAP", vwap_signal),
-        ("VOLUME", volume_signal),
-        ("PRICE_ACTION", price_action_signal),
-        ("MEAN_REVERSION", mean_reversion_signal),
-        ("ICT", ict_signal),
-        ("WYCKOFF", wyckoff_signal),
-        ("KAMA", kama_signal),
-        ("DONCHIAN", donchian_signal),
-        ("DIVERGENCE", divergence_signal),
-        ("CAMBRIDGE_HOOK", cambridge_hook_signal),
-    )
     signals = {
-        name: safe_strategy_call(name, function, candles)
-        for name, function in strategy_functions
+        name: safe_strategy_call(name, globals()[function_name], candles)
+        for name, function_name in MULTI_STRATEGY_FUNCTIONS
     }
-    signals["CRYPTO"] = get_crypto_signal(price)
+    if historical:
+        signals["CRYPTO"] = {
+            "side": "NEUTRAL", "score": 0,
+            "reason": "Historical funding/open-interest data is unavailable.",
+        }
+    else:
+        signals["CRYPTO"] = get_crypto_signal(price)
+
+    scoring_signals = signals
+    if strategy_selection is not None:
+        selected = set(strategy_selection)
+        unknown = selected - set(signals)
+        if unknown:
+            raise ValueError(f"Unknown strategy selection: {', '.join(sorted(unknown))}")
+        scoring_signals = {name: value for name, value in signals.items() if name in selected}
 
     try:
-        final_signal = score_strategies(signals, regime)
+        final_signal = score_strategies(scoring_signals, regime)
     except TypeError:
-        final_signal = score_strategies(strategy_signals=signals, regime=regime)
+        final_signal = score_strategies(strategy_signals=scoring_signals, regime=regime)
     if not isinstance(final_signal, dict):
         raise ValueError("The multi-strategy scorer returned an invalid result.")
 
     side = final_signal.get("side", "NEUTRAL")
     active = final_signal.get("active_long" if side == "LONG" else "active_short", [])
+    display_active = ["ARJUNA" if name == "ICT" else name for name in active]
     reason = final_signal.get("reason") or (
-        f"Weighted {side.lower()} consensus from {', '.join(active)}."
+        f"Weighted {side.lower()} consensus from {', '.join(display_active)}."
         if side in {"LONG", "SHORT"} and active
         else (
             "No directional agreement among active strategies. "
-            f"Long: {', '.join(final_signal.get('active_long', [])) or 'none'}; "
-            f"short: {', '.join(final_signal.get('active_short', [])) or 'none'}."
+            f"Long: {', '.join('ARJUNA' if name == 'ICT' else name for name in final_signal.get('active_long', [])) or 'none'}; "
+            f"short: {', '.join('ARJUNA' if name == 'ICT' else name for name in final_signal.get('active_short', [])) or 'none'}."
         )
     )
     final_signal = {**final_signal, "reason": reason}
@@ -542,6 +567,7 @@ def analyze_multi_strategy_candles(candles):
         "price": price,
         "regime": regime_data,
         "signals": signals,
+        "scored_strategies": list(scoring_signals),
         "final_signal": final_signal,
     }
 
@@ -745,7 +771,9 @@ def run_analysis():
             score_display = f"{float(signal.get('score', 0)):.0f}"
         except (TypeError, ValueError):
             score_display = "0"
-        print(f"{name:<18} {signal.get('side', 'NEUTRAL'):<8} {score_display:<5} {signal.get('reason', '')}")
+        display_name = "ARJUNA" if name == "ICT" else name
+        display_reason = str(signal.get("reason", "")).replace("ICT", "ARJUNA")
+        print(f"{display_name:<18} {signal.get('side', 'NEUTRAL'):<8} {score_display:<5} {display_reason}")
 
     crypto = signals["CRYPTO"]
     if crypto.get("funding_rate") is not None:
@@ -846,9 +874,10 @@ def run_analysis():
 
     if heavy_conditions:
 
+        display_heavy_conditions = ["ARJUNA" if name == "ICT" else name for name in heavy_conditions]
         print(
             f"Heavy List          : "
-            f"{', '.join(heavy_conditions)}"
+            f"{', '.join(display_heavy_conditions)}"
         )
 
     print(

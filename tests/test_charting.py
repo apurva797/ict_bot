@@ -77,8 +77,8 @@ class ChartNormalizationTests(unittest.TestCase):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
             next(item for item in app.selectbox if item.label == "Market").set_value("ETH/USDT").run()
             next(item for item in app.selectbox if item.label == "Candle interval").set_value("15m").run()
-            app.radio[0].set_value("Existing ICT Strategy").run()
-            app.button[0].click().run()
+            app.radio[0].set_value("ARJUNA Strategy").run()
+            next(button for button in app.button if button.label == "Check latest ARJUNA signal").click().run()
             self.assertFalse(list(app.exception))
             self.assertTrue(any("ETH/USDT · 15m" in item.value for item in app.caption))
 

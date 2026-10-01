@@ -183,7 +183,7 @@ def run_ict_backtest(frame, starting_capital=10_000.0, news_blackout=False):
     from strategies.ict import ict_signal
 
     if frame is None or len(frame) < 100:
-        raise ValueError("Insufficient market data for the ICT strategy.")
+        raise ValueError("Insufficient market data for the ARJUNA strategy.")
     sides = []
     for i, (timestamp, row) in enumerate(frame.iterrows()):
         if i < 99 or not ict_entry_gate(timestamp, news_blackout=news_blackout)[0]:

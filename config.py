@@ -1,3 +1,13 @@
+# This module is the backwards-compatible facade over platform_core.settings.
+# Every value below is read from the single settings source, so risk, market,
+# and environment configuration can no longer drift between modules.
+
+from platform_core.settings import load_settings
+
+
+_SETTINGS = load_settings()
+
+
 # ============================================================
 # MARKET CONFIGURATION
 # ============================================================
@@ -5,11 +15,11 @@
 MARKET = "CRYPTO"
 
 SYMBOL = "BTC/USDT"
-
 HTF_TIMEFRAME = "1h"
-LTF_TIMEFRAME = "5m"
+LTF_TIMEFRAME = _SETTINGS.market.default_timeframe
 
 HTF_LIMIT = 300
+LTF_LIMIT = _SETTINGS.market.default_candles
 LTF_LIMIT = 500
 
 
@@ -17,16 +27,18 @@ LTF_LIMIT = 500
 # TRADE / RISK SETTINGS
 # ============================================================
 
-PAPER_TRADING = True
+PAPER_TRADING = _SETTINGS.environment != "LIVE"
 
-MIN_RR = 1.5
-DEFAULT_RR = 2.0
+MIN_RR = _SETTINGS.risk.min_rr
+DEFAULT_RR = _SETTINGS.risk.default_rr
 
-RISK_PER_TRADE = 0.01
-MAX_LEVERAGE = 1.0
+RISK_PER_TRADE = _SETTINGS.risk.risk_per_trade
+MAX_LEVERAGE = _SETTINGS.risk.max_leverage
 
-MAX_TRADES_PER_DAY = 3
-MAX_DAILY_LOSS_R = 2.0
+MAX_TRADES_PER_DAY = _SETTINGS.risk.max_trades_per_day
+MAX_DAILY_LOSS_R = _SETTINGS.risk.max_daily_loss_r
+COOLDOWN_MINUTES = _SETTINGS.risk.cooldown_minutes
+MAX_OPEN_POSITIONS = _SETTINGS.risk.max_open_positions
 
 
 # ============================================================
@@ -66,8 +78,8 @@ DONCHIAN_PERIOD = 20
 # ATR / VOLATILITY
 # ============================================================
 
-ATR_PERIOD = 14
-ATR_SL_MULTIPLIER = 1.5
+ATR_PERIOD = _SETTINGS.risk.atr_period
+ATR_SL_MULTIPLIER = _SETTINGS.risk.atr_sl_multiplier
 
 
 # ============================================================
@@ -78,11 +90,11 @@ ICT_ENABLED = True
 
 DISPLACEMENT_MULTIPLIER = 1.5
 
-SIGNAL_COOLDOWN_MINUTES = 30
+SIGNAL_COOLDOWN_MINUTES = _SETTINGS.risk.cooldown_minutes
 
 
 # ============================================================
-# KILL ZONES - UTC
+# KILL ZONES - UTC (informational only, never a paper entry gate)
 # ============================================================
 
 # London
@@ -102,10 +114,10 @@ ASIAN_END = 5
 # NEWS PROTECTION
 # ============================================================
 
-NEWS_FILTER_ENABLED = True
+NEWS_FILTER_ENABLED = _SETTINGS.news_filter_enabled
 
 # Manually set True when a major event is approaching.
-NEWS_BLACKOUT = False
+NEWS_BLACKOUT = _SETTINGS.news_blackout
 
 
 # ============================================================

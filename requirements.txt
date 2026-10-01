@@ -1,3 +1,6 @@
+# Pinned so cloud and local resolve identically.
+# Requires Python >= 3.11 (see .python-version): pandas 3.x will not install on
+# 3.9/3.10, which is the usual cause of a failed Streamlit Cloud deploy.
 ccxt==4.5.78
 google-genai==2.25.0
 numpy==2.4.6

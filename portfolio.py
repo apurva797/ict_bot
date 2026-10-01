@@ -1,7 +1,7 @@
 """Portfolio snapshots derived only from the active session's paper accounts."""
 
 
-def portfolio_snapshot(accounts):
+def portfolio_snapshot(accounts, fee_rate=None):
     account_list = list(accounts)
     balance = sum(float(account.get("balance", 0.0)) for account in account_list)
     starting = sum(float(account.get("starting_capital", 0.0)) for account in account_list)
@@ -13,7 +13,10 @@ def portfolio_snapshot(accounts):
         mark = account.get("last_mark")
         if position is not None and mark is not None:
             direction = 1 if position["side"] == "LONG" else -1
-            unrealized += (float(mark) - float(position["entry"])) * float(position["quantity"]) * direction
+            gross = (float(mark) - float(position["entry"])) * float(position["quantity"]) * direction
+            rate = fee_rate if fee_rate is not None else account.get("fee_rate", 0.0)
+            fees = (float(position["entry"]) + float(mark)) * float(position["quantity"]) * float(rate) if rate else 0.0
+            unrealized += gross - fees
             positions += 1
         trades.extend(account.get("trades", []))
     equity = balance + unrealized

@@ -1,9 +1,12 @@
 import os
+import sys
+import time
 from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
 import pandas as pd
+import pytest
 import requests
 import streamlit as st
 from streamlit.testing.v1 import AppTest
@@ -15,6 +18,65 @@ from strategies.ict import ict_signal
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+class LiveSnapshotCacheTests(unittest.TestCase):
+    """The UI monitor re-runs on a timer, so snapshots must not block every render."""
+
+    def setUp(self):
+        demo_data._SNAPSHOT_CACHE.clear()
+        self.addCleanup(demo_data._SNAPSHOT_CACHE.clear)
+
+    @pytest.mark.exercise_live_snapshot
+    def test_successful_snapshot_is_reused_within_the_ttl(self):
+        payload = {"symbol": "BTC/USDT", "timeframe": "5m", "price": 100.0,
+                   "updated_at": pd.Timestamp.now(tz="UTC"),
+                   "source": "Coinbase Exchange public market data",
+                   "candle": {"close": 100.5}}
+        with patch("demo_data.requests.Session") as session:
+            demo_data._SNAPSHOT_CACHE[("BTC/USDT", "5m")] = (payload, time.time())
+            first = demo_data.fetch_live_market_snapshot("BTC/USDT", "5m")
+            second = demo_data.fetch_live_market_snapshot("BTC/USDT", "5m")
+        session.assert_not_called()
+        self.assertEqual(first["price"], 100.0)
+        self.assertEqual(second["price"], 100.0)
+
+    @pytest.mark.exercise_live_snapshot
+    def test_cached_snapshot_is_not_shared_by_reference(self):
+        payload = {"symbol": "BTC/USDT", "timeframe": "5m", "price": 100.0,
+                   "updated_at": pd.Timestamp.now(tz="UTC"),
+                   "source": "Coinbase Exchange public market data",
+                   "candle": {"close": 100.5}}
+        demo_data._SNAPSHOT_CACHE[("BTC/USDT", "5m")] = (payload, time.time())
+        first = demo_data.fetch_live_market_snapshot("BTC/USDT", "5m")
+        first["candle"]["close"] = -1.0
+        second = demo_data.fetch_live_market_snapshot("BTC/USDT", "5m")
+        self.assertEqual(second["candle"]["close"], 100.5)
+
+    @pytest.mark.exercise_live_snapshot
+    def test_failure_is_cached_without_losing_the_specific_reason(self):
+        failure = MarketDataError("Coinbase ticker is stale (900 seconds old).")
+        demo_data._SNAPSHOT_CACHE[("BTC/USDT", "5m")] = (failure, time.time())
+        with self.assertRaises(MarketDataError) as error:
+            demo_data.fetch_live_market_snapshot("BTC/USDT", "5m")
+        self.assertIn("stale", str(error.exception))
+
+    @pytest.mark.exercise_live_snapshot
+    def test_expired_entry_triggers_a_real_fetch(self):
+        demo_data._SNAPSHOT_CACHE[("BTC/USDT", "5m")] = (
+            MarketDataError("old failure"), time.time() - demo_data._SNAPSHOT_CACHE_TTL_SECONDS - 1)
+        session = Mock()
+        session.get.side_effect = OSError("network down")
+        with patch("demo_data.requests.Session", return_value=session):
+            with self.assertRaises(MarketDataError) as error:
+                demo_data.fetch_live_market_snapshot("BTC/USDT", "5m")
+        self.assertIn("network down", str(error.exception))
+        session.get.assert_called()
+
+    def test_request_timeout_is_bounded(self):
+        # A bounded timeout keeps the monitor fragment from freezing the page
+        # when the public endpoint is slow.
+        self.assertLessEqual(demo_data._SNAPSHOT_REQUEST_TIMEOUT, 5)
 
 
 class MarketDataFallbackTests(unittest.TestCase):
@@ -45,6 +107,26 @@ class MarketDataFallbackTests(unittest.TestCase):
         sample.assert_not_called()
         self.assertEqual(result.source, "Binance public OHLCV")
         self.assertFalse(result.used_fallback)
+
+    def test_binance_provider_reaches_the_ccxt_client(self):
+        """The provider must resolve ccxt at call time, not via a module global.
+
+        A lazy module attribute alone only covers attribute access, so a
+        function body referring to ``ccxt`` directly raises NameError and the
+        primary provider silently falls back to the backup.
+        """
+        frame = self.sample_frame()
+        exchange = Mock()
+        exchange.fetch_ohlcv.return_value = [
+            [int(index.timestamp() * 1000), row.open, row.high, row.low, row.close, row.volume]
+            for index, row in frame.iterrows()
+        ]
+        client = Mock()
+        client.binance.return_value = exchange
+        with patch.dict(sys.modules, {"ccxt": client}):
+            result = demo_data._fetch_binance_ohlcv("BTC/USDT", "1h", 250)
+        self.assertEqual(list(result.columns), ["open", "high", "low", "close", "volume"])
+        self.assertFalse(result.isna().any().any())
 
     def test_binance_failure_attempts_coinbase_backup(self):
         frame = self.sample_frame()
@@ -114,8 +196,8 @@ class MarketDataFallbackTests(unittest.TestCase):
         st.cache_data.clear()
         with patch("demo_data.fetch_market_data", return_value=result):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
-            app.radio[0].set_value("Existing ICT Strategy").run()
-            next(button for button in app.button if button.label == "Check latest ICT signal").click().run()
+            app.radio[0].set_value("ARJUNA Strategy").run()
+            next(button for button in app.button if button.label == "Check latest ARJUNA signal").click().run()
         self.assertFalse(list(app.exception))
         self.assertIn("Using backup data source", [item.value for item in app.info])
         self.assertTrue(any("Bundled historical sample (not live)" in item.value for item in app.caption))
@@ -159,8 +241,8 @@ class MarketDataFallbackTests(unittest.TestCase):
              patch("demo_data._fetch_coinbase_ohlcv", side_effect=RuntimeError("offline")), \
              self.assertLogs("ict_demo.market_data", level="ERROR"):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
-            app.radio[0].set_value("Existing ICT Strategy").run()
-            next(button for button in app.button if button.label == "Check latest ICT signal").click().run()
+            app.radio[0].set_value("ARJUNA Strategy").run()
+            next(button for button in app.button if button.label == "Check latest ARJUNA signal").click().run()
         self.assertFalse(list(app.exception))
         self.assertIn("Using backup data source", [item.value for item in app.info])
         self.assertTrue(any("Bundled historical sample (not live)" in item.value for item in app.caption))

@@ -14,6 +14,15 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class MultiStrategyPipelineTests(unittest.TestCase):
+    @staticmethod
+    def _live_snapshot():
+        now = pd.Timestamp.now(tz="UTC")
+        bucket = now.floor("5min")
+        return {"symbol": "BTC/USDT", "timeframe": "5m", "price": 105.0, "updated_at": now,
+                "source": "Test Coinbase snapshot",
+                "candle": {"timestamp": bucket, "open": 105.0, "high": 106.0, "low": 104.0,
+                           "close": 105.0, "volume": 10.0}}
+
     def test_bot_risk_plan_keeps_one_point_five_minimum_and_two_r_default(self):
         candles = [[i * 300_000, 100, 102, 98, 100, 10] for i in range(250)]
         for side in ("LONG", "SHORT"):
@@ -96,18 +105,23 @@ class MultiStrategyPipelineTests(unittest.TestCase):
             },
         }
         with patch("demo_data.fetch_market_data", return_value=data_result), \
-             patch("bot.analyze_multi_strategy_candles", return_value=analysis):
+             patch("bot.analyze_multi_strategy_candles", return_value=analysis), \
+             patch("demo_data.fetch_live_market_snapshot", return_value=self._live_snapshot()):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.selectbox[3].set_value("5m").run()
             next(button for button in app.button if button.label == "Analyze all strategies").click().run()
             next(button for button in app.button if button.label == "Update multi-strategy paper account").click().run()
+            app.run()
         self.assertFalse(list(app.exception))
-        account = app.session_state["paper_accounts"]["multi.strategy|BTC/USDT|1h"]
+        account = app.session_state["paper_accounts"]["multi.strategy|BTC/USDT|5m"]
         self.assertIsNotNone(account["position"])
         self.assertEqual(account["position"]["side"], "LONG")
         position = account["position"]
         self.assertAlmostEqual(
             (position["target"] - position["entry"]) / position["risk_distance"], 2.0
         )
+        self.assertEqual(account["starting_capital"], 10_000.0)
+        self.assertEqual(len(app.session_state["paper_accounts"]), 1)
 
     def test_multi_strategy_paper_entry_stays_blocked_without_confirmation(self):
         index = pd.date_range(datetime(2026, 1, 1, tzinfo=timezone.utc), periods=250, freq="5min")
@@ -127,12 +141,14 @@ class MultiStrategyPipelineTests(unittest.TestCase):
             },
         }
         with patch("demo_data.fetch_market_data", return_value=data_result), \
-             patch("bot.analyze_multi_strategy_candles", return_value=analysis):
+             patch("bot.analyze_multi_strategy_candles", return_value=analysis), \
+             patch("demo_data.fetch_live_market_snapshot", return_value=self._live_snapshot()):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app.selectbox[3].set_value("5m").run()
             next(button for button in app.button if button.label == "Analyze all strategies").click().run()
             next(button for button in app.button if button.label == "Update multi-strategy paper account").click().run()
         self.assertFalse(list(app.exception))
-        account = app.session_state["paper_accounts"]["multi.strategy|BTC/USDT|1h"]
+        account = app.session_state["paper_accounts"]["multi.strategy|BTC/USDT|5m"]
         self.assertIsNone(account["position"])
         self.assertTrue(any("TRADE BLOCKED: INSUFFICIENT CONFIRMATION" in item.value for item in app.error))
 
@@ -143,7 +159,8 @@ class MultiStrategyPipelineTests(unittest.TestCase):
                               "close": close, "volume": 100.0}, index=index)
         result = MarketDataResult(frame, "Test public candles", False)
         with patch("demo_data.fetch_market_data", return_value=result), \
-             patch("bot.get_crypto_signal", return_value={"side": "NEUTRAL", "score": 0, "reason": "Test data"}):
+             patch("bot.get_crypto_signal", return_value={"side": "NEUTRAL", "score": 0, "reason": "Test data"}), \
+             patch("demo_data.fetch_live_market_snapshot", return_value=self._live_snapshot()):
             app = AppTest.from_file(str(ROOT / "app.py")).run()
             next(button for button in app.button if button.label == "Analyze all strategies").click().run()
         self.assertFalse(list(app.exception))

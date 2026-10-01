@@ -64,7 +64,7 @@ class StrategyRegistry:
 
 class IctStrategyPlugin:
     metadata = StrategyMetadata(
-        id="ict", name="ICT", category="Built-in", min_candles=100,
+        id="ict", name="ARJUNA", category="Built-in", min_candles=100,
         description="Existing liquidity sweep, displacement, MSS, FVG, order block, and HTF-bias signal logic.",
     )
 

@@ -1,19 +1,20 @@
 # AI Algo Trading Demo
 
-A simulation-only trading strategy platform. The shared app lets a user describe a rules-based idea, review and edit a validated specification, inspect a generated Python adapter, backtest it on normalized OHLCV, and paper-trade it in the current Streamlit session. ICT, Quant, and custom DSL strategies are plugins over shared market-data, backtest, risk, and paper-account services.
+A simulation-only trading strategy platform. The shared app lets a user describe a rules-based idea, review and edit a validated specification, inspect a generated Python adapter, backtest it on normalized OHLCV, and paper-trade it in the current Streamlit session. ARJUNA (internal key `ICT`), Quant, and custom DSL strategies are plugins over shared market-data, backtest, risk, and paper-account services.
 
 > **DEMO MODE ONLY. LIVE ORDERS DISABLED.** The public app has no broker credential inputs or live order route. It does not provide investment advice or promise future performance.
 
 ## Current platform capabilities
 
-- **Shared strategy registry:** ICT, Quant EMA trend following, Quant RSI mean reversion, and validated custom DSL plugins implement a common signal contract. New plugins can be added without rewriting the UI or simulation engines.
+- **Shared strategy registry:** ARJUNA, Quant EMA trend following, Quant RSI mean reversion, and validated custom DSL plugins implement a common signal contract. ARJUNA retains its internal `ICT` key. New plugins can be added without rewriting the UI or simulation engines.
 - **Multi-strategy engine:** the Streamlit app calls the same `bot.py` analysis pipeline as the terminal bot: regime detection, all 15 existing signals, and the shared weighted scorer. Confirmation remains 4+ points or 2 independent heavy conditions. The CLI paper engine is 24/7; the app reports whether the signal/confirmation gates pass and keeps paper execution subject to cooldown, daily, ATR, and risk controls.
-- **Custom strategy workflow:** English, Hindi, and Hinglish rules are interpreted locally for common RSI, EMA/SMA, VWAP, price-vs-average, and previous-candle high/low conditions; Gemini can interpret additional requests when `GEMINI_API_KEY` is configured. The app asks a specific follow-up when an entry is ambiguous or refers to unsupported ICT customization. Validated rules are shown as a confirmation, editable, backtestable, and paper-tradeable. Generated adapter source is deterministic and never executed by the app.
-- **ICT:** existing liquidity sweep, displacement, market structure shift, FVG, order block, and higher-timeframe bias logic is preserved. ICT paper entries are evaluated 24 hours a day; configured news blackout, 30-minute cooldown, fixed 1% risk, default 2R target (minimum allowed 1.5R), and 1x notional cap still apply. Time is displayed in UTC and IST.
+- **Custom strategy workflow:** English, Hindi, and Hinglish rules are interpreted locally for common RSI, EMA/SMA, VWAP, price-vs-average, and previous-candle high/low conditions; Gemini can interpret additional requests when `GEMINI_API_KEY` is configured. The app asks a specific follow-up when an entry is ambiguous or refers to unsupported ARJUNA customization. Validated rules are shown as a confirmation, editable, backtestable, and paper-tradeable. Generated adapter source is deterministic and never executed by the app.
+- **ARJUNA:** existing liquidity sweep, displacement, market structure shift, FVG, order block, and higher-timeframe bias logic is preserved under the internal `ICT` identifier. ARJUNA paper entries are evaluated 24 hours a day; configured news blackout, 30-minute cooldown, fixed 1% risk, default 2R target (minimum allowed 1.5R), and 1x notional cap still apply. Time is displayed in UTC and IST.
 - **Quant:** configurable EMA crossover and RSI mean-reversion plugins use the same normalized candle data and paper/backtest engines.
 - **Chart:** TradingView Lightweight Charts 5.2.0 renders OHLCV supplied by this app's validated market-data provider. The chart does not fetch strategy data from TradingView. It needs a browser connection to jsDelivr for the chart library.
 - **Market data:** Binance public candles → Coinbase Exchange public candles → bundled historical CSV. The UI names the active source and labels fallback data. Sample data is not live data.
-- **Backtest:** finalized-candle signals fill at the next bar open, 0.01% slippage and 0.04% fees per side, 1% risk, minimum 1.5R (default target 2R), max 1x notional, 30-minute cooldown, stop-first when both SL and TP occur in one candle, and end-of-data close. Metrics include return, P&L, drawdown, wins/losses, profit factor, expectancy, average R, fees, estimated slippage, trade duration, streaks, Sharpe, and Sortino where calculable.
+- **Backtesting:** a separate historical-only section in the Multi-Strategy Engine replays the same `bot.py` strategy functions, regime detector, scorer, and confirmation result for each candle prefix. Binance and Coinbase public historical OHLCV are tried first; validated bundled sample CSV or an uploaded `timestamp,open,high,low,close,volume` file are available when needed. The current per-run cap is 1,000 candles to keep prefix replay responsive. It reports portfolio and per-strategy statistics, blocked signals, trades, equity, and drawdown. Funding/open-interest history is not available in this path, so the existing CRYPTO strategy slot is neutral during historical analysis. No paper account or live order state is changed.
+- **Backtest execution assumptions:** finalized-candle signals fill at the next bar open; the default fee is 0.04% and slippage 0.01% per side; risk is configurable up to the fixed 1% demo cap; minimum R:R is 1.5R and default target is 2R; maximum notional is 1x; a 30-minute cooldown and existing daily trade/loss limits apply. If SL and TP both occur in one candle, SL is chosen; positions open at the last available close if still open at end of data.
 - **Paper trading:** simulated, session-scoped state only. No real orders are sent. Refreshing or ending the session can lose the account and journal state.
 
 ## Run locally
@@ -35,9 +36,11 @@ streamlit run app.py
 
 1. Push the reviewed repository to your GitHub repository.
 2. Create the Streamlit app from the repository's `main` branch and set the main file path to `app.py`.
-3. Select Python 3.14 in the deployment settings.
+3. Python version is pinned to 3.12 in `.python-version`. `pandas==3.0.5` requires
+   Python >= 3.11, so deploying on 3.9/3.10 fails at install time with an
+   unresolved-dependency error.
 4. Add `GEMINI_API_KEY` (and optionally `GEMINI_MODEL`) through the app's server-side Secrets panel if Gemini interpretation is wanted. Do not add exchange or broker credentials.
-5. Deploy, then verify the demo safety banner, active market-data source, chart, an ICT signal/backtest, a Quant backtest, custom rule validation, and paper account.
+5. Deploy, then verify the demo safety banner, active market-data source, chart, an ARJUNA signal/backtest, a Quant backtest, custom rule validation, and paper account.
 
 ## Safety boundary and implementation limits
 

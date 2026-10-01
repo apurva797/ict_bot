@@ -341,14 +341,14 @@ def interpret_strategy(text):
                 draft = {"side": side, "entry": [], "exit": [], **preferences} if preferences else None
                 limitations = []
                 if preferences.get("rr", 2.0) < 1.5:
-                    limitations.append("The existing ICT engine enforces a minimum 1.5R target.")
+                    limitations.append("The existing ARJUNA engine enforces a minimum 1.5R target.")
                 if re.search(r"\b(sl|stop\s*loss|stoploss)\b", lowered):
-                    limitations.append("The existing ICT engine uses its fixed 1% price-risk stop, not a custom swing stop.")
+                    limitations.append("The existing ARJUNA engine uses its fixed 1% price-risk stop, not a custom swing stop.")
                 limitation = " ".join(limitations) or None
                 return StrategyInterpretation(
-                    None, draft, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — ICT setup → {('Short' if side == 'SELL' else 'Long')}",
-                    "I recognize this as an ICT price-action setup. Which confirmation should the existing ICT engine wait for?",
-                    ["Bearish/bullish candle confirmation", "Market structure shift", "Use the complete existing ICT strategy"],
+                    None, draft, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — ARJUNA setup → {('Short' if side == 'SELL' else 'Long')}",
+                    "I recognize this as an ARJUNA price-action setup. Which confirmation should the existing ARJUNA engine wait for?",
+                    ["Bearish/bullish candle confirmation", "Market structure shift", "Use the complete existing ARJUNA strategy"],
                     symbol, timeframe, limitation,
                 )
             if re.search(r"\brsi\b", lowered):
@@ -392,14 +392,14 @@ def interpret_strategy(text):
     if re.search(r"liquidity|sweep|fvg|fair value gap|order block|\bmss\b|market structure|bearish reversal|bullish reversal|displacement", lowered):
         limitations = []
         if draft.get("rr", 2.0) < 1.5:
-            limitations.append("The existing ICT engine enforces a minimum 1.5R target.")
+            limitations.append("The existing ARJUNA engine enforces a minimum 1.5R target.")
         if re.search(r"\b(sl|stop\s*loss|stoploss)\b", lowered):
-            limitations.append("The existing ICT engine uses its fixed 1% price-risk stop, not a custom swing stop.")
+            limitations.append("The existing ARJUNA engine uses its fixed 1% price-risk stop, not a custom swing stop.")
         limitation = " ".join(limitations) or None
         return StrategyInterpretation(
-            None, draft, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — ICT setup",
-            "I recognize an ICT price-action setup. Should I use the existing ICT engine's full confirmation rules?",
-            ["Use the complete existing ICT strategy", "Add a measurable indicator condition"], symbol, timeframe, limitation,
+            None, draft, f"{symbol or 'Selected market'} {timeframe or 'selected timeframe'} — ARJUNA setup",
+            "I recognize an ARJUNA price-action setup. Should I use the existing ARJUNA engine's full confirmation rules?",
+            ["Use the complete existing ARJUNA strategy", "Add a measurable indicator condition"], symbol, timeframe, limitation,
         )
 
     summary = _summarize_spec(draft, symbol, timeframe)

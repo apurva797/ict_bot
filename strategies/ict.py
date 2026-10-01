@@ -312,7 +312,7 @@ def ict_signal(candles, htf_candles=None):
         "score": max(long_score, short_score),
         "reason": (
             f"{htf_reason}; "
-            "ICT conditions not sufficiently aligned"
+            "ARJUNA conditions not sufficiently aligned"
         )
     }
 

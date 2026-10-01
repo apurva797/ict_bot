@@ -33,6 +33,9 @@ class StrategyPlatformTests(unittest.TestCase):
     def test_registry_exposes_ict_quant_and_custom_plugins(self):
         ids = {item.id for item in strategy_registry.list()}
         self.assertTrue({"ict", "quant.trend", "quant.mean_reversion", "custom.dsl"} <= ids)
+        ict = strategy_registry.get("ict")
+        self.assertEqual(ict.metadata.id, "ict")
+        self.assertEqual(ict.metadata.name, "ARJUNA")
 
     def test_registry_rejects_duplicate_ids(self):
         registry = StrategyRegistry()

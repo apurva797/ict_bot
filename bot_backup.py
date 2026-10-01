@@ -108,7 +108,7 @@ def print_market_info(
 
     print()
     print("=" * 70)
-    print("              ICT MARKET ANALYSIS V2")
+    print("            ARJUNA MARKET ANALYSIS V2")
     print("=" * 70)
 
     print(
@@ -196,7 +196,7 @@ def print_diagnostic(
     print("-" * 70)
 
     print(
-        f"{side} ICT DIAGNOSTIC"
+        f"{side} ARJUNA DIAGNOSTIC"
     )
 
     print("-" * 70)
@@ -244,7 +244,7 @@ def print_diagnostic(
     print()
 
     print(
-        "ICT SCORE       :",
+        "ARJUNA SCORE    :",
         f"{score}/100"
     )
 
@@ -697,7 +697,7 @@ def analyze_market():
                 }
 
     print(
-        "NO VALID ICT SETUP."
+        "NO VALID ARJUNA SETUP."
     )
 
     return None
@@ -736,7 +736,7 @@ def show_signal(signal):
 
     print()
     print("=" * 70)
-    print("🚨 ICT SIGNAL DETECTED")
+    print("🚨 ARJUNA SIGNAL DETECTED")
     print("=" * 70)
 
     print(
@@ -790,7 +790,7 @@ def main():
 
     print()
     print("=" * 70)
-    print("          ICT CRYPTO PAPER TRADING BOT V2")
+    print("        ARJUNA CRYPTO PAPER TRADING BOT V2")
     print("=" * 70)
 
     print(
@@ -824,7 +824,7 @@ def main():
     )
 
     print(
-        "Trading: Valid ICT setups, 24 hours"
+        "Trading: Valid ARJUNA setups, 24 hours"
     )
 
     while True:

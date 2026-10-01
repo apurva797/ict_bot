@@ -125,9 +125,9 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
         next(item for item in app.button if item.label == "Generate strategy").click().run()
         self.assertFalse(list(app.exception))
         self.assertTrue(any("Which confirmation" in item.value for item in app.info))
-        next(item for item in app.button if item.label == "Open Existing ICT Strategy").click().run()
+        next(item for item in app.button if item.label == "Open ARJUNA Strategy").click().run()
         self.assertFalse(list(app.exception))
-        self.assertEqual(app.radio[0].value, "Existing ICT Strategy")
+        self.assertEqual(app.radio[0].value, "ARJUNA Strategy")
 
     def test_streamlit_confirmation_displays_requested_one_point_five_r(self):
         app = AppTest.from_file(str(ROOT / "app.py")).run()

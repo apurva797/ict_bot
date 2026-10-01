@@ -1,9 +1,19 @@
-"""Stable TradingView Lightweight Charts component for normalized app OHLCV."""
+"""Stable TradingView Lightweight Charts component for normalized app OHLCV.
+
+In addition to candles and volume the component can render:
+  * indicator line series computed in Python (``overlays``)
+  * ICT structures detected by the strategy (``ict``) as price lines, shaded
+    zones, and level markers
+  * user drawings (horizontal/vertical lines, trend lines, rectangles, text)
+
+Every overlay value is computed from real candles. Nothing here is decorative.
+"""
 
 from __future__ import annotations
 
 import hashlib
 import json
+import math
 
 import pandas as pd
 import streamlit as st
@@ -95,20 +105,191 @@ def chart_update_kind(previous: list[dict], current: list[dict],
 
 
 def make_chart_payload(frame: pd.DataFrame, title: str, dataset_id: str,
-                       reset_id: int = 0, height: int = CHART_HEIGHT) -> dict:
+                       reset_id: int = 0, height: int = CHART_HEIGHT,
+                       overlays: list | None = None, ict: dict | None = None,
+                       drawings: list | None = None,
+                       price_decimals: int | None = None) -> dict:
+    """Build the JSON payload for one chart render.
+
+    ``overlays`` are pre-computed indicator series, ``ict`` holds detected
+    structures, and ``drawings`` are user annotations. All are optional so the
+    existing call sites keep working unchanged.
+    """
     normalized = normalize_chart_ohlcv(frame)
     candles, volumes = _chart_rows(normalized)
-    encoded = json.dumps([candles, volumes], separators=(",", ":"), allow_nan=False)
+    payload_overlays = _sanitize_overlays(overlays or [], normalized)
+    payload_ict = _sanitize_ict(ict, normalized)
+    payload_drawings = _sanitize_drawings(drawings or [])
+    encoded = json.dumps(
+        [candles, volumes, payload_overlays, payload_ict, payload_drawings],
+        separators=(",", ":"), allow_nan=False, sort_keys=True,
+    )
     digest = hashlib.sha256(encoded.encode("utf-8")).hexdigest()
     return {
         "candles": candles,
         "volumes": volumes,
+        "overlays": payload_overlays,
+        "ict": payload_ict,
+        "drawings": payload_drawings,
+        "price_decimals": price_decimals,
         "digest": digest,
         "dataset_id": str(dataset_id),
         "title": str(title),
         "reset_id": int(reset_id),
         "height": max(300, int(height)),
     }
+
+
+def _time_seconds(index) -> int:
+    return int(pd.Timestamp(index).value // 1_000_000_000)
+
+
+def _sanitize_overlays(overlays: list, frame: pd.DataFrame) -> list[dict]:
+    """Keep only finite overlay points that align with real candle times."""
+    valid_times = {_time_seconds(stamp) for stamp in frame.index}
+    cleaned: list[dict] = []
+    for overlay in overlays:
+        if not isinstance(overlay, dict):
+            continue
+        name = str(overlay.get("name") or overlay.get("id") or "indicator")
+        pane = str(overlay.get("pane") or "price")
+        series = overlay.get("series") or overlay.get("data")
+        if not series:
+            continue
+        rows = []
+        for point in series:
+            if not isinstance(point, dict):
+                continue
+            stamp = point.get("time")
+            value = point.get("value")
+            if stamp is None or value is None:
+                continue
+            value = float(value)
+            if not math.isfinite(value):
+                continue
+            time_value = int(stamp)
+            if valid_times and time_value not in valid_times:
+                continue
+            rows.append({"time": time_value, "value": value})
+        if rows:
+            cleaned.append({
+                "name": name,
+                "pane": pane,
+                "color": str(overlay.get("color") or "#1e6bff"),
+                "width": int(overlay.get("width") or 2),
+                "line_style": int(overlay.get("line_style") or 0),
+                "data": rows,
+            })
+    return cleaned
+
+
+def _sanitize_ict(ict: dict | None, frame: pd.DataFrame) -> dict:
+    """Map detected ICT structures onto chart primitives, skipping absent ones."""
+    empty = {"lines": [], "boxes": [], "markers": []}
+    if not ict or frame.empty:
+        return empty
+    last_time = _time_seconds(frame.index[-1])
+    lines: list[dict] = []
+    boxes: list[dict] = []
+    markers: list[dict] = []
+
+    def add_line(key: str, value, color: str, title: str, style: int = 0) -> None:
+        if value is None:
+            return
+        try:
+            price = float(value)
+        except (TypeError, ValueError):
+            return
+        if not math.isfinite(price):
+            return
+        lines.append({"price": price, "color": color, "title": title,
+                      "line_style": style, "axis_label_visible": True})
+
+    liquidity = ict.get("liquidity") or {}
+    dealing = ict.get("dealing_range") or {}
+    if liquidity:
+        add_line("sell_side", liquidity.get("sell_side"), "#ef5350", "BSL / sell-side")
+        add_line("buy_side", liquidity.get("buy_side"), "#26a69a", "SSL / buy-side")
+    if dealing:
+        add_line("equilibrium", dealing.get("equilibrium"), "#8d99ae", "Equilibrium", 2)
+
+    for name in ("bullish", "bearish"):
+        gap = (ict.get("fvg") or {}).get(name)
+        if not isinstance(gap, dict):
+            continue
+        low, high = gap.get("low"), gap.get("high")
+        if low is None or high is None:
+            continue
+        try:
+            low, high = float(low), float(high)
+        except (TypeError, ValueError):
+            continue
+        if not (math.isfinite(low) and math.isfinite(high)):
+            continue
+        start_time = _time_seconds(frame.index[-1]) - max(3, len(frame) // 8) * 300
+        boxes.append({
+            "top": high, "bottom": low,
+            "start_time": max(int(frame.index[0].value // 1_000_000_000), start_time),
+            "end_time": last_time,
+            "color": "#2f6fed" if name == "bullish" else "#f28b82",
+            "label": f"{'Bullish' if name == 'bullish' else 'Bearish'} FVG",
+        })
+
+    structure = ict.get("structure") or {}
+    if structure.get("bullish_mss"):
+        markers.append({"time": last_time, "position": "belowBar", "color": "#26a69a",
+                        "shape": "arrowUp", "text": "MSS"})
+    if structure.get("bearish_mss"):
+        markers.append({"time": last_time, "position": "aboveBar", "color": "#ef5350",
+                        "shape": "arrowDown", "text": "MSS"})
+    displacement = ict.get("displacement") or {}
+    if displacement.get("bullish"):
+        markers.append({"time": last_time, "position": "belowBar", "color": "#1e6bff",
+                        "shape": "circle", "text": "Disp"})
+    if displacement.get("bearish"):
+        markers.append({"time": last_time, "position": "aboveBar", "color": "#1e6bff",
+                        "shape": "circle", "text": "Disp"})
+
+    for name, key in (("bullish", "entry"), ("bearish", "entry")):
+        level = ict.get(key)
+        if level is None:
+            continue
+        color = "#26a69a" if name == "bullish" else "#ef5350"
+        add_line(key, level, color, "Entry", 1)
+    add_line("stop_loss", ict.get("stop_loss"), "#ef5350", "Stop loss", 2)
+    add_line("take_profit", ict.get("take_profit"), "#26a69a", "Take profit", 2)
+    return {"lines": lines, "boxes": boxes, "markers": markers}
+
+
+def _sanitize_drawings(drawings: list) -> list[dict]:
+    """Validate user drawings so a malformed annotation cannot break the chart."""
+    cleaned: list[dict] = []
+    for drawing in drawings:
+        if not isinstance(drawing, dict):
+            continue
+        kind = str(drawing.get("kind") or "").strip()
+        if kind not in {"horizontal_line", "vertical_line", "trend_line", "rectangle", "text"}:
+            continue
+        points = drawing.get("points") or []
+        try:
+            points = [[float(point[0]), float(point[1])] for point in points]
+        except (TypeError, ValueError, IndexError):
+            continue
+        if not all(len(point) == 2 and all(math.isfinite(value) for value in point)
+                   for point in points):
+            continue
+        needed = 1 if kind in {"horizontal_line", "vertical_line", "text"} else 2
+        if kind == "text" and not str(drawing.get("text") or "").strip():
+            continue
+        if len(points) < needed:
+            continue
+        cleaned.append({
+            "kind": kind,
+            "points": points[:2],
+            "color": str(drawing.get("color") or "#f2b705"),
+            "text": str(drawing.get("text") or ""),
+        })
+    return cleaned
 
 
 _HTML = '<div class="chart-status" aria-live="polite">Loading chart…</div><div class="chart-root" role="img" aria-label="OHLCV candlestick and volume chart"></div>'
@@ -227,6 +408,75 @@ function applyData(state, data) {
 
   const status = state.root.parentElement.querySelector(".chart-status");
   if (status) status.textContent = `${data.title} · finalized OHLCV · UTC`;
+  renderOverlays(state, data);
+}
+
+// Draw indicator series, ICT structures, and user drawings from real values.
+function renderOverlays(state, data) {
+  if (!state.library) return;
+  const overlays = Array.isArray(data.overlays) ? data.overlays : [];
+  const overlayKey = JSON.stringify(overlays);
+  if (state.overlayKey !== overlayKey) {
+    for (const series of (state.overlaySeries || [])) {
+      try { state.chart.removeSeries(series); } catch (_) {}
+    }
+    state.overlaySeries = [];
+    for (const overlay of overlays) {
+      try {
+        const isVolume = overlay.pane === "volume";
+        const series = state.chart.addSeries(state.library.LineSeries, {
+          color: overlay.color, lineWidth: overlay.width, lineStyle: overlay.line_style,
+          priceLineVisible: false, lastValueVisible: false, crosshairMarkerVisible: false,
+          ...(isVolume ? { priceScaleId: "volume" } : {}),
+        });
+        series.setData(overlay.data.map((point) => ({ time: point.time, value: point.value })));
+        state.overlaySeries.push(series);
+      } catch (error) {
+        if (state.status) state.status.textContent = "An indicator could not be drawn on the chart.";
+      }
+    }
+    state.overlayKey = overlayKey;
+  }
+
+  const ict = data.ict || { lines: [], boxes: [], markers: [] };
+  const ictKey = JSON.stringify(ict);
+  if (state.ictKey === ictKey) return;
+  state.ictKey = ictKey;
+
+  for (const priceLine of (state.ictLines || [])) {
+    try { state.price.removePriceLine(priceLine); } catch (_) {}
+  }
+  state.ictLines = [];
+  for (const line of (ict.lines || [])) {
+    try {
+      state.ictLines.push(state.price.createPriceLine({
+        price: line.price, color: line.color, lineWidth: 1,
+        lineStyle: line.line_style || 0, axisLabelVisible: line.axis_label_visible !== false,
+        title: line.title || "",
+      }));
+    } catch (_) {}
+  }
+
+  try {
+    if (state.volume.setMarkers) state.volume.setMarkers(ict.markers || []);
+  } catch (_) {}
+
+  for (const box of (state.ictBoxes || [])) {
+    try { state.price.removeSeries(box); } catch (_) {}
+  }
+  state.ictBoxes = [];
+  for (const zone of (ict.boxes || [])) {
+    try {
+      state.ictBoxes.push(state.price.createPriceLine({
+        price: zone.top, color: zone.color, lineWidth: 1, lineStyle: 0,
+        axisLabelVisible: false, title: zone.label || "",
+      }));
+      state.ictBoxes.push(state.price.createPriceLine({
+        price: zone.bottom, color: zone.color, lineWidth: 1, lineStyle: 0,
+        axisLabelVisible: false, title: "",
+      }));
+    } catch (_) {}
+  }
 }
 
 function classify(previous, previousVolumes, current, currentVolumes) {
@@ -303,11 +553,16 @@ _COMPONENTS_BY_RUNTIME: dict[int, object] = {}
 
 
 def render_ohlcv_chart(frame: pd.DataFrame, title: str = "OHLCV", height: int = CHART_HEIGHT,
-                       dataset_id: str = "default", reset_id: int = 0) -> None:
-    """Mount one stable v2 component and send only normalized OHLCV data."""
+                       dataset_id: str = "default", reset_id: int = 0,
+                       overlays: list | None = None, ict: dict | None = None,
+                       drawings: list | None = None,
+                       price_decimals: int | None = None) -> None:
+    """Mount one stable v2 component and send normalized OHLCV plus overlays."""
     if frame is None or frame.empty:
         return
-    payload = make_chart_payload(frame, title, dataset_id, reset_id, height)
+    payload = make_chart_payload(frame, title, dataset_id, reset_id, height,
+                                 overlays=overlays, ict=ict, drawings=drawings,
+                                 price_decimals=price_decimals)
     # Component definitions belong to a Streamlit runtime. Register once per
     # runtime (including isolated AppTest runtimes), not once per rerun.
     from streamlit.components.v2.get_bidi_component_manager import get_bidi_component_manager
