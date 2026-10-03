@@ -230,8 +230,8 @@ def render_multi_strategy_backtesting(default_symbol, default_timeframe):
     st.subheader("Equity curve")
     equity = result["equity"]
     if not equity.empty:
-        st.line_chart(equity[["equity"]], height=300, key="multi_backtest_equity_curve")
-        st.line_chart(equity[["drawdown_pct"]], height=180, key="multi_backtest_drawdown_curve")
+        st.line_chart(equity[["equity"]], height=300)
+        st.line_chart(equity[["drawdown_pct"]], height=180)
     if not result["trades"].empty:
         with st.expander("Detailed trade log"):
             st.dataframe(result["trades"], width="stretch", hide_index=True)
@@ -385,7 +385,7 @@ def render_portfolio_dashboard():
         stats[5].metric("Fees paid", f"${analytics['fees_paid']:,.2f}")
         curve = equity_curve(snapshot["trade_journal"], snapshot["starting_capital"])
         if curve:
-            st.line_chart(pd.DataFrame(curve)[["equity"]], height=240, key="portfolio_equity")
+            st.line_chart(pd.DataFrame(curve)[["equity"]], height=240)
     else:
         st.info("No closed paper trades yet, so performance statistics are not available.")
 
