@@ -117,7 +117,8 @@ def card(body: str, *, variant: str = "", interactive: bool = False) -> str:
         classes.append("ui-card--flat")
     if interactive:
         classes.append("ui-card--interactive")
-    return f'<div class="{" ".join(classes)}">{body}</div>'
+    class_names = " ".join(classes)
+    return f'<div class="{class_names}">{body}</div>'
 
 
 def section_head(title: str, note: str = "") -> str:
@@ -137,7 +138,8 @@ def pill(text: str, tone: str = "", *, dot: bool = False, live: bool = False) ->
     marker = ""
     if dot:
         marker = f'<span class="ui-dot{" ui-dot--live" if live else ""}"></span>'
-    return f'<span class="{" ".join(classes)}">{marker}{esc(text)}</span>'
+    class_names = " ".join(classes)
+    return f'<span class="{class_names}">{marker}{esc(text)}</span>'
 
 
 def status_pill(text: str, tone: str = "", *, live: bool = False,
