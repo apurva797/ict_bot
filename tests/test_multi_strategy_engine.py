@@ -9,6 +9,8 @@ from demo_data import MarketDataResult
 from engine.scorer import score_strategies
 from pathlib import Path
 
+from conftest import click, go_to, open_app, open_trade, pick_strategy, strategy_radio
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -82,9 +84,9 @@ class MultiStrategyPipelineTests(unittest.TestCase):
         self.assertEqual(result["short_heavy_conditions_list"], [])
 
     def test_streamlit_defaults_to_full_multi_strategy_dashboard(self):
-        app = AppTest.from_file(str(ROOT / "app.py")).run()
+        app = open_trade()
         self.assertFalse(list(app.exception))
-        self.assertEqual(app.radio[0].value, "Multi-Strategy Engine")
+        self.assertEqual(strategy_radio(app).value, "Multi-Strategy Engine")
         self.assertTrue(any(button.label == "Analyze all strategies" for button in app.button))
 
     def test_multi_strategy_paper_entry_requires_scorer_confirmation(self):
@@ -107,10 +109,9 @@ class MultiStrategyPipelineTests(unittest.TestCase):
         with patch("demo_data.fetch_market_data", return_value=data_result), \
              patch("bot.analyze_multi_strategy_candles", return_value=analysis), \
              patch("demo_data.fetch_live_market_snapshot", return_value=self._live_snapshot()):
-            app = AppTest.from_file(str(ROOT / "app.py")).run()
-            app.selectbox[3].set_value("5m").run()
-            next(button for button in app.button if button.label == "Analyze all strategies").click().run()
-            next(button for button in app.button if button.label == "Update multi-strategy paper account").click().run()
+            app = open_trade()
+            click(app, "Analyze all strategies")
+            click(app, "Update multi-strategy paper account")
             app.run()
         self.assertFalse(list(app.exception))
         account = app.session_state["paper_accounts"]["multi.strategy|BTC/USDT|5m"]
@@ -143,10 +144,9 @@ class MultiStrategyPipelineTests(unittest.TestCase):
         with patch("demo_data.fetch_market_data", return_value=data_result), \
              patch("bot.analyze_multi_strategy_candles", return_value=analysis), \
              patch("demo_data.fetch_live_market_snapshot", return_value=self._live_snapshot()):
-            app = AppTest.from_file(str(ROOT / "app.py")).run()
-            app.selectbox[3].set_value("5m").run()
-            next(button for button in app.button if button.label == "Analyze all strategies").click().run()
-            next(button for button in app.button if button.label == "Update multi-strategy paper account").click().run()
+            app = open_trade()
+            click(app, "Analyze all strategies")
+            click(app, "Update multi-strategy paper account")
         self.assertFalse(list(app.exception))
         account = app.session_state["paper_accounts"]["multi.strategy|BTC/USDT|5m"]
         self.assertIsNone(account["position"])
@@ -161,12 +161,13 @@ class MultiStrategyPipelineTests(unittest.TestCase):
         with patch("demo_data.fetch_market_data", return_value=result), \
              patch("bot.get_crypto_signal", return_value={"side": "NEUTRAL", "score": 0, "reason": "Test data"}), \
              patch("demo_data.fetch_live_market_snapshot", return_value=self._live_snapshot()):
-            app = AppTest.from_file(str(ROOT / "app.py")).run()
-            next(button for button in app.button if button.label == "Analyze all strategies").click().run()
+            app = open_trade()
+            click(app, "Analyze all strategies")
         self.assertFalse(list(app.exception))
-        self.assertTrue(any(metric.label == "Market regime" for metric in app.metric))
-        self.assertTrue(any(metric.label == "Final signal" for metric in app.metric))
-        self.assertTrue(app.dataframe)
+        rendered = "\n".join(item.value for item in app.markdown)
+        self.assertIn("Market regime", rendered)
+        self.assertIn("Final signal", rendered)
+        self.assertIn("Strategy signals", rendered)
 
 
 if __name__ == "__main__":

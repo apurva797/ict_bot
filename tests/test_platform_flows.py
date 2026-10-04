@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 from streamlit.testing.v1 import AppTest
 
+from conftest import click, go_to, open_app, open_trade, pick_strategy, rendered, strategy_radio
 import demo_data
 from demo_paper import advance_ict_paper_account
 from platform_core.signals import Signal
@@ -188,17 +189,20 @@ class AppFlowTests(unittest.TestCase):
             sample(), "Bundled historical sample (not live)", True)
         st.cache_data.clear()
         with patch("demo_data.fetch_market_data", return_value=result):
-            app = AppTest.from_file(str(ROOT / "app.py")).run()
-            app.radio[0].set_value("ARJUNA Strategy").run()
+            app = open_app()
+            pick_strategy(app, "ARJUNA Strategy")
             next(button for button in app.button
                  if button.label == "Check latest ARJUNA signal").click().run()
         return app
 
     def test_app_loads_with_paper_banner_and_no_exceptions(self):
-        app = AppTest.from_file(str(ROOT / "app.py")).run()
+        app = open_app()
         self.assertFalse(list(app.exception))
-        self.assertTrue(any("DEMO MODE: ON" in item.value for item in app.error))
-        self.assertTrue(any("PAPER TRADING" in item.value for item in app.markdown))
+        page = rendered(app)
+        # The banner is persistent: every screen states that this is a
+        # simulation with no broker credentials, not just the first render.
+        self.assertIn("PAPER TRADING", page)
+        self.assertIn("Simulation only", page)
 
     def test_ict_signal_check_shows_stages_and_distinguishes_no_setup(self):
         app = self.run_ict_check()

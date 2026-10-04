@@ -1,16 +1,12 @@
 import io
 import unittest
-from unittest.mock import patch
-from pathlib import Path
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pandas as pd
-from streamlit.testing.v1 import AppTest
 
+from conftest import go_to, open_app, rendered
 from demo_data import MarketDataError, fetch_historical_market_data, load_uploaded_ohlcv
 from multi_strategy_backtest import WARMUP_CANDLES, run_multi_strategy_backtest
-
-ROOT = Path(__file__).resolve().parents[1]
 
 
 def candles(count=106):
@@ -166,9 +162,14 @@ class HistoricalBacktestTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["Total trades"], 1)
 
     def test_streamlit_has_separate_backtesting_section(self):
-        app = AppTest.from_file(str(ROOT / "app.py")).run()
+        """Historical research has its own screen instead of hiding in Trade."""
+        app = go_to(open_app(), "Research")
         self.assertFalse(list(app.exception))
-        self.assertTrue(any(item.label == "Run historical backtest" for item in app.button))
+        page = rendered(app)
+        self.assertIn("Backtest", page)
+        self.assertIn("One configuration, historical only", page)
+        # Data is fetched only when asked for, never on page load.
+        self.assertTrue(any(item.label == "Load research data" for item in app.button))
 
 
 if __name__ == "__main__":

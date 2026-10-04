@@ -29,14 +29,6 @@ from platform_core.status import DataHealth, Status
 from platform_ui import (render_data_health, render_ict_overlay_toggles,
                          render_ict_stages, render_indicator_controls,
                          render_mobile_nav, render_paper_banner, render_status)
-from ui import navigation
-from ui.research import screens as research_screen
-from ui.screens import home as home_screen
-from ui.screens import markets as markets_screen
-from ui.screens import portfolio as portfolio_screen
-from ui.screens import settings as settings_screen
-from ui.screens import trade as trade_screen
-from ui.theme import inject_design_system as inject_ui_design_system
 
 logging.basicConfig(level=logging.INFO)
 LOGGER = logging.getLogger("ict_demo")
@@ -56,60 +48,7 @@ except Exception:
     # Streamlit secrets are optional for local runs.
     pass
 
-st.set_page_config(page_title="Arjun Trading Platform", page_icon="📊", layout="wide",
-                   initial_sidebar_state="expanded")
-
-
-def render_routed_app() -> None:
-    """Render the compact platform shell while keeping engines screen-owned."""
-    inject_ui_design_system(SETTINGS)
-    with st.sidebar:
-        st.markdown("<div class='ui-brand'>ARJUN <span>TRADING PLATFORM</span></div>",
-                    unsafe_allow_html=True)
-        st.caption("Multi-strategy paper terminal")
-        st.divider()
-        st.markdown("**Workspace**")
-        sidebar_market = st.selectbox(
-            "Symbol", ["BTC/USDT", "ETH/USDT", "SOL/USDT"], key="shell_symbol")
-        sidebar_timeframe = st.selectbox(
-            "Timeframe", ["5m", "15m", "1h"], key="shell_timeframe")
-        sidebar_capital = st.number_input(
-            "Paper capital", min_value=1000.0, max_value=1_000_000.0,
-            value=10_000.0, step=1000.0, key="shell_capital")
-        st.divider()
-        st.caption("Execution")
-        st.markdown("PAPER MODE")
-        st.caption("Live orders are disabled. Risk controls remain active.")
-
-    st.markdown(
-        "<div class='ui-topbar'><div><div class='ui-eyebrow'>MULTI-STRATEGY TERMINAL</div>"
-        "<div class='ui-shell-title'>ARJUN Trading Platform</div></div>"
-        "<div class='ui-topbar-meta'>SESSION ONLY · UTC</div></div>",
-        unsafe_allow_html=True,
-    )
-    route = navigation.render()
-    if route == navigation.HOME:
-        home_screen.render()
-    elif route == navigation.MARKETS:
-        markets_screen.render(sidebar_market, sidebar_timeframe)
-    elif route == navigation.TRADE:
-        trade_screen.render(sidebar_market, sidebar_timeframe, sidebar_capital)
-    elif route == navigation.PORTFOLIO:
-        portfolio_screen.render()
-    elif route == navigation.SETTINGS:
-        settings_screen.render(SETTINGS)
-    else:
-        research_screen.render()
-
-
-render_routed_app()
-st.stop()
-
-# Legacy renderer retained below as a rollback reference.
-if False:
-    pass
-
-"""
+st.set_page_config(page_title="AI Algo Trading Demo", page_icon="📈", layout="wide")
 from platform_ui import inject_design_system
 
 inject_design_system(SETTINGS)
@@ -126,7 +65,6 @@ st.caption(
     "→ portfolio & P&L → backtesting. Strategies are plug-in modules; the engine never "
     "depends on this UI."
 )
-"""
 # Reserve one stable location for the chart so strategy-panel reruns do not
 # mount it at a different Streamlit delta path.
 chart_slot = st.container()

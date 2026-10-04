@@ -6,6 +6,7 @@ import pandas as pd
 from streamlit.testing.v1 import AppTest
 
 from charting import chart_update_kind, make_chart_payload, normalize_chart_ohlcv
+from conftest import click, go_to, open_app, open_trade, pick_strategy, rendered, strategy_radio
 from demo_data import MarketDataResult
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -74,28 +75,33 @@ class ChartNormalizationTests(unittest.TestCase):
             self.frame(250), "Bundled historical sample (not live)", True,
         )
         with patch("demo_data.fetch_market_data", return_value=market_data):
-            app = AppTest.from_file(str(ROOT / "app.py")).run()
+            app = open_trade(open_app())
             next(item for item in app.selectbox if item.label == "Market").set_value("ETH/USDT").run()
             next(item for item in app.selectbox if item.label == "Candle interval").set_value("15m").run()
-            app.radio[0].set_value("ARJUNA Strategy").run()
-            next(button for button in app.button if button.label == "Check latest ARJUNA signal").click().run()
+            pick_strategy(app, "ARJUNA Strategy")
+            click(app, "Check latest ARJUNA signal")
             self.assertFalse(list(app.exception))
-            self.assertTrue(any("ETH/USDT · 15m" in item.value for item in app.caption))
+            self.assertEqual(app.session_state["chart_snapshot"]["symbol"], "ETH/USDT")
+            self.assertEqual(app.session_state["chart_snapshot"]["timeframe"], "15m")
+            self.assertIn("ETH/USDT · 15m", rendered(app))
 
             # Rerun without a chart action, then switch strategy panels. The
             # previously loaded dataset remains at the same stable component slot.
             app.run()
-            app.radio[0].set_value("Quant Strategy").run()
+            pick_strategy(app, "Quant Strategy")
             self.assertFalse(list(app.exception))
-            self.assertTrue(any("ETH/USDT · 15m" in item.value for item in app.caption))
-            app.radio[0].set_value("AI Strategy").run()
+            self.assertEqual(app.session_state["chart_snapshot"]["symbol"], "ETH/USDT")
+            pick_strategy(app, "AI Strategy")
             self.assertFalse(list(app.exception))
 
             next(item for item in app.selectbox if item.label == "Market").set_value("SOL/USDT").run()
             next(item for item in app.selectbox if item.label == "Candle interval").set_value("5m").run()
             self.assertFalse(list(app.exception))
-            self.assertTrue(any("last loaded market" in item.value for item in app.caption))
-            self.assertTrue(any("ETH/USDT · 15m" in item.value for item in app.caption))
+            # The selectors moved but the chart still shows what was actually
+            # loaded, and says so rather than implying the new market is drawn.
+            self.assertIn("last loaded market", rendered(app))
+            self.assertEqual(app.session_state["chart_snapshot"]["symbol"], "ETH/USDT")
+            self.assertEqual(app.session_state["chart_snapshot"]["timeframe"], "15m")
 
 
 if __name__ == "__main__":

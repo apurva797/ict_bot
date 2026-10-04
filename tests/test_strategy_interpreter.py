@@ -8,6 +8,7 @@ from streamlit.testing.v1 import AppTest
 from demo_strategy import evaluate_conditions, interpret_strategy
 from voice_strategy import apply_voice_transcript
 
+from conftest import click, go_to, open_app, open_trade, pick_strategy, strategy_radio
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -117,8 +118,8 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
         self.assertEqual(result.specification["side"], "BUY")
 
     def test_streamlit_builder_shows_clarification_instead_of_generic_rejection(self):
-        app = AppTest.from_file(str(ROOT / "app.py")).run()
-        app.radio[0].set_value("AI Strategy").run()
+        app = open_app()
+        pick_strategy(app, "AI Strategy")
         next(item for item in app.text_area if item.key == "strategy_text").set_value(
             "Liquidity sweep ke baad short"
         ).run()
@@ -130,19 +131,21 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
         self.assertEqual(app.radio[0].value, "ARJUNA Strategy")
 
     def test_streamlit_confirmation_displays_requested_one_point_five_r(self):
-        app = AppTest.from_file(str(ROOT / "app.py")).run()
-        app.radio[0].set_value("AI Strategy").run()
+        app = open_app()
+        pick_strategy(app, "AI Strategy")
         next(item for item in app.text_area if item.key == "strategy_text").set_value(
             "RSI 30 ke neeche buy target 1.5R"
         ).run()
         next(item for item in app.button if item.label == "Generate strategy").click().run()
         self.assertFalse(list(app.exception))
-        target = next(item for item in app.metric if item.label == "Target")
-        self.assertEqual(target.value, "1.5R")
+        # The confirmation is a rendered card grid, so the requested reward is
+        # asserted on the card that actually displays it.
+        target_card = next(item.value for item in app.markdown if ">Target<" in item.value)
+        self.assertIn("1.5R", target_card)
 
     def test_editing_description_invalidates_old_confirmation_before_execution(self):
-        app = AppTest.from_file(str(ROOT / "app.py")).run()
-        app.radio[0].set_value("AI Strategy").run()
+        app = open_app()
+        pick_strategy(app, "AI Strategy")
         next(item for item in app.text_area if item.key == "strategy_text").set_value("RSI 30 ke neeche buy").run()
         next(item for item in app.button if item.label == "Generate strategy").click().run()
         self.assertTrue(any(item.label == "Backtest" for item in app.button))
