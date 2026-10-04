@@ -882,9 +882,10 @@ def _render_multi_results(analysis: dict) -> None:
     ui.html_block(ui.section_head("Confirmation"))
     passed = bool(final.get("confirmation_passed"))
     heavy = final.get("heavy_conditions") or []
+    gate_pill = ui.status_pill("Gates passed" if passed else "Trade blocked",
+                               "profit" if passed else "loss", dot=True)
     body = (
-        f'<div class="ui-row">{ui.status_pill("Gates passed" if passed else "Trade blocked",
-                                             "profit" if passed else "loss", dot=True)}</div>'
+        f'<div class="ui-row">{gate_pill}</div>'
         f'<div style="margin-top:.5rem">{ui.rows([("Direction", ui.esc(str(final.get("side", "NEUTRAL")))), ("Final score", ui.esc(str(final.get("score", 0)))), ("Normal confirmation", "Passed" if final.get("normal_confirmation") else "Not passed"), ("Heavy confirmation", "Passed" if final.get("heavy_confirmation") else "Not passed"), ("Heavy conditions", ui.esc(", ".join(strategies.display_name(name) for name in heavy) or "None")) ])}</div>'
         f'<div class="ui-sub" style="margin-top:.45rem">{ui.esc(str(final.get("reason", "")))}</div>'
     )
