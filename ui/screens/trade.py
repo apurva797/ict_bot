@@ -42,6 +42,93 @@ LABEL_TO_KEY = {
     "Multi-Strategy Engine": "multi.strategy",
 }
 
+# Terminal layout stylesheet for this screen only. Every rule keys off a
+# marker span that only the Trade screen renders, so the refinements (rail
+# rhythm, compact ticket density, early stacking of the chart/rail/watchlist
+# row) can never leak onto other screens. The chart stays the dominant
+# workspace; the right rail becomes a readable signal-to-execution ticket.
+_TRADE_PANEL_CSS = """
+<style>
+/* Right trade rail: breathing room without dashboard-sized chrome. */
+[data-testid="stColumn"]:has(.tw-mark--panel) { min-width: 0; }
+[data-testid="stColumn"]:has(.tw-mark--panel) > [data-testid="stVerticalBlock"] > * + * {
+  margin-top: .3rem;
+}
+[data-testid="stColumn"]:has(.tw-mark--panel) .ui-section-head {
+  margin-top: 1.6rem;
+  margin-bottom: .85rem;
+}
+
+/* The strategy radio ships gapless options; give each choice its own row. */
+[data-testid="stColumn"]:has(.tw-mark--panel) [data-testid="stRadioGroup"] {
+  gap: .45rem;
+}
+
+/* Labels sit clearly above the control they name. */
+[data-testid="stColumn"]:has(.tw-mark--panel) [data-testid="stWidgetLabel"] {
+  margin-bottom: .35rem;
+}
+
+/* Ticket numbers stay legible and line up on the decimal. */
+[data-testid="stColumn"]:has(.tw-mark--panel) [data-testid="stNumberInputField"],
+[data-testid="stColumn"]:has(.tw-mark--panel) [data-testid="stTextInputRoot"] input {
+  font-size: 1rem;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Action buttons read as deliberate next steps, not stacked rows. */
+[data-testid="stColumn"]:has(.tw-mark--panel) [data-testid="stButton"] {
+  margin-top: .5rem;
+}
+
+/* Compact terminal density inside the rail. */
+[data-testid="stColumn"]:has(.tw-mark--panel) .ui-card { padding: .85rem .95rem; }
+[data-testid="stColumn"]:has(.tw-mark--panel) .ui-grid { gap: .6rem; }
+[data-testid="stColumn"]:has(.tw-mark--panel) .ui-empty { padding: 1.3rem 1rem; }
+
+/* Side-by-side terminal: hairline divider between chart and ticket, and stat
+   grids drop to two-up so cards never shrink into dashboard slivers inside
+   a ~30% rail. */
+@media (min-width: 1025px) {
+  [data-testid="stColumn"]:has(.tw-mark--panel) {
+    border-left: 1px solid var(--ui-border);
+    padding-left: .9rem;
+    margin-left: .2rem;
+  }
+  [data-testid="stColumn"]:has(.tw-mark--panel) .ui-grid--3,
+  [data-testid="stColumn"]:has(.tw-mark--panel) .ui-grid--4 {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+/* Below ~1024px the terminal stacks in trading order: chart first, trade
+   rail beneath it, watchlist last. Streamlit only stacks columns at 640px,
+   which is far too late for order controls. */
+div:has(> [data-testid="stColumn"]:has(.tw-mark--panel)) { flex-wrap: wrap; }
+[data-testid="stColumn"]:has(.tw-mark--chart),
+[data-testid="stColumn"]:has(.tw-mark--watch) { min-width: 0; }
+@media (max-width: 1024px) {
+  [data-testid="stColumn"]:has(.tw-mark--panel),
+  [data-testid="stColumn"]:has(.tw-mark--chart),
+  [data-testid="stColumn"]:has(.tw-mark--watch) {
+    width: 100%;
+    min-width: 100%;
+    border-left: 0;
+    padding-left: 0;
+    margin-left: 0;
+  }
+  [data-testid="stColumn"]:has(.tw-mark--chart) { order: 1; }
+  [data-testid="stColumn"]:has(.tw-mark--panel) {
+    order: 2;
+    border-top: 1px solid var(--ui-border);
+    padding-top: .8rem;
+    margin-top: .6rem;
+  }
+  [data-testid="stColumn"]:has(.tw-mark--watch) { order: 3; }
+}
+</style>
+"""
+
 
 def render(symbol: str, timeframe: str, starting_capital: float) -> str:
     """Render the Trade screen and return the selected strategy label.
@@ -57,12 +144,17 @@ def render(symbol: str, timeframe: str, starting_capital: float) -> str:
 
     # Reserve the chart before strategy actions run. Actions publish a snapshot
     # during the same rerun, so the chart remains the stable dominant workspace.
-    watchlist_col, chart_col, panel_col = st.columns([0.85, 2.2, 1.15], gap="small")
+    # Chart-dominant terminal split: watchlist rail, dominant chart, and a
+    # ~32% trade rail (strategy + ticket) wide enough to read comfortably.
+    watchlist_col, chart_col, panel_col = st.columns([0.8, 2.0, 1.3], gap="small")
     with watchlist_col:
         _render_terminal_watchlist(symbol)
     chart_slot = chart_col.empty()
     with panel_col:
-        ui.html_block(ui.section_head("Trade panel", "Signal · risk · execution"))
+        ui.html_block(_TRADE_PANEL_CSS)
+        ui.html_block(
+            '<span class="tw-mark tw-mark--panel"></span>'
+            + ui.section_head("Trade panel", "Signal · risk · execution"))
         strategy_choice = st.radio(
             "Strategy", list(STRATEGY_LABELS), horizontal=False, key="strategy_choice",
         )
@@ -71,7 +163,9 @@ def render(symbol: str, timeframe: str, starting_capital: float) -> str:
         _render_side_panel(strategy_choice, symbol, timeframe, starting_capital)
 
     with chart_slot.container():
-        ui.html_block(ui.section_head("Price chart", f"{symbol} · {timeframe} · finalized candles"))
+        ui.html_block(
+            '<span class="tw-mark tw-mark--chart"></span>'
+            + ui.section_head("Price chart", f"{symbol} · {timeframe} · finalized candles"))
         _render_chart(symbol, timeframe)
 
     _render_bottom_terminal(symbol, timeframe)
@@ -102,7 +196,8 @@ def _terminal_header(symbol: str, timeframe: str) -> str:
 
 def _render_terminal_watchlist(selected: str) -> None:
     """Compact watchlist; quotes load explicitly and never fabricate prices."""
-    ui.html_block(ui.section_head("Watchlist", "LTP · change"))
+    ui.html_block('<span class="tw-mark tw-mark--watch"></span>'
+                  + ui.section_head("Watchlist", "LTP · change"))
     symbols = marketdata.watchlist()
     rows = st.session_state.get("watchlist_rows") or {}
     selected = st.selectbox("Watchlist symbol", list(symbols),
