@@ -16,7 +16,7 @@ from dataclasses import dataclass
 
 import streamlit as st
 
-from ui import components as ui
+from . import components as ui
 
 ROUTE_KEY = "route"
 

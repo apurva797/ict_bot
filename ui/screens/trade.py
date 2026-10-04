@@ -51,6 +51,7 @@ def render(symbol: str, timeframe: str, starting_capital: float) -> str:
     """
     symbol = st.session_state.get("terminal_watchlist", symbol)
     symbol, timeframe = _market_controls(symbol, timeframe)
+    st.session_state.setdefault("terminal_watchlist", symbol)
     ui.html_block(_terminal_header(symbol, timeframe))
     _paper_banner()
 
@@ -104,9 +105,10 @@ def _render_terminal_watchlist(selected: str) -> None:
     ui.html_block(ui.section_head("Watchlist", "LTP · change"))
     symbols = marketdata.watchlist()
     rows = st.session_state.get("watchlist_rows") or {}
-    selected = st.radio("Watchlist symbol", list(symbols), index=list(symbols).index(selected)
-                        if selected in symbols else 0, key="terminal_watchlist",
-                        label_visibility="collapsed")
+    selected = st.selectbox("Watchlist symbol", list(symbols),
+                            index=list(symbols).index(selected)
+                            if selected in symbols else 0,
+                            key="terminal_watchlist", label_visibility="collapsed")
     if not rows:
         ui.html_block(ui.info_state("Quotes not loaded", "Load the watchlist to compare markets."))
         if st.button("Load watchlist", key="terminal_load_watchlist", width="stretch"):
@@ -201,11 +203,14 @@ def _market_controls(symbol: str, timeframe: str) -> tuple[str, str]:
     Loading is an explicit action rather than an automatic fetch so a data
     request never fires merely because a user opened the screen.
     """
-    first, second = st.columns([1, 1], gap="small")
+    first, second, third = st.columns([1.3, 1, 1], gap="small")
     with first:
+        symbol = st.selectbox("Market", list(marketdata.watchlist()),
+                              key="market_select")
+    with second:
         timeframe = st.selectbox("Candle interval", list(marketdata.TIMEFRAMES),
                                  key="timeframe_select")
-    with second:
+    with third:
         st.markdown("")
         st.markdown("")
         if st.button("Load chart", key="load_chart", type="primary", width="stretch"):
