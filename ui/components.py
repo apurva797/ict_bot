@@ -381,7 +381,7 @@ def strategy_card(name: str, category: str, status: str, status_tone: str,
         f'<div><div style="font-weight:660;font-size:.98rem">{esc(name)}</div>'
         f'<div class="ui-sub">{esc(category)}</div></div>'
         f'{status_pill(status, status_tone, live=live)}</div>'
-        f'<div style="margin-top:.7rem">{stat("Today\'s P&L", pnl_value)}</div>'
+        f'<div style="margin-top:.7rem">{stat("Today's P&L", pnl_value)}</div>'
         f'<div style="margin-top:.55rem">{rows([("Active trades", esc(active_positions)), ("Win rate", win_value), ("Risk status", esc(risk))])}</div>'
     )
     return card(body, variant=status_tone if status_tone in {"profit", "loss"} else "",
