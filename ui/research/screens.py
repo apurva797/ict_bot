@@ -25,8 +25,8 @@ from ui.research import core
 
 LOGGER = logging.getLogger("ui.research.screens")
 
-TABS = ("Backtest", "Optimization", "Walk Forward", "Monte Carlo", "Robustness",
-        "Trade Journal", "Learnings")
+TABS = ("Backtest", "Multi-Strategy", "Optimization", "Walk Forward", "Monte Carlo",
+        "Robustness", "Trade Journal", "Learnings")
 
 
 def render() -> None:
@@ -40,8 +40,10 @@ def render() -> None:
         variant="flat",
     ))
     st.markdown("")
-    renderers = (_backtest, _optimization, _walk_forward, _monte_carlo,
-                 _robustness, _journal, _learnings)
+    from ui.research.multi_strategy import render as render_multi_strategy
+
+    renderers = (_backtest, render_multi_strategy, _optimization, _walk_forward,
+                 _monte_carlo, _robustness, _journal, _learnings)
     for panel, renderer in zip(st.tabs(list(TABS)), renderers):
         with panel:
             renderer()

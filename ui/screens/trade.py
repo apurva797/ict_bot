@@ -43,23 +43,31 @@ LABEL_TO_KEY = {
 }
 
 # Terminal layout stylesheet for this screen only. Every rule keys off a
-# marker span that only the Trade screen renders, so the refinements (rail
-# rhythm, compact ticket density, early stacking of the chart/rail/watchlist
-# row) can never leak onto other screens. The chart stays the dominant
-# workspace; the right rail becomes a readable signal-to-execution ticket.
+# marker span that only the Trade screen renders, so the refinements cannot
+# leak onto other screens. The chart and ticket share the main workspace;
+# the ticket is intentionally wide enough to remain a first-class surface.
 _TRADE_PANEL_CSS = """
 <style>
-/* Right trade rail: breathing room without dashboard-sized chrome. */
+/* The ticket is a primary workspace, not a narrow dashboard rail. */
 [data-testid="stColumn"]:has(.tw-mark--panel) { min-width: 0; }
 [data-testid="stColumn"]:has(.tw-mark--panel) > [data-testid="stVerticalBlock"] > * + * {
-  margin-top: .3rem;
+  margin-top: .45rem;
 }
 [data-testid="stColumn"]:has(.tw-mark--panel) .ui-section-head {
-  margin-top: 1.6rem;
-  margin-bottom: .85rem;
+  margin-top: .35rem;
+  margin-bottom: .7rem;
+}
+[data-testid="stColumn"]:has(.tw-mark--panel) > [data-testid="stVerticalBlock"] {
+  background: var(--ui-surface);
+  border: 1px solid var(--ui-border);
+  border-radius: 14px;
+  padding: 1rem 1.1rem 1.15rem;
+}
+[data-testid="stColumn"]:has(.tw-mark--panel) .ui-label {
+  letter-spacing: .04em;
 }
 
-/* The strategy radio ships gapless options; give each choice its own row. */
+/* Keep strategy choices readable and easy to hit. */
 [data-testid="stColumn"]:has(.tw-mark--panel) [data-testid="stRadioGroup"] {
   gap: .45rem;
 }
@@ -76,55 +84,31 @@ _TRADE_PANEL_CSS = """
   font-variant-numeric: tabular-nums;
 }
 
-/* Action buttons read as deliberate next steps, not stacked rows. */
+/* Action buttons read as deliberate next steps, not cramped controls. */
 [data-testid="stColumn"]:has(.tw-mark--panel) [data-testid="stButton"] {
-  margin-top: .5rem;
+  margin-top: .35rem;
 }
 
-/* Compact terminal density inside the rail. */
-[data-testid="stColumn"]:has(.tw-mark--panel) .ui-card { padding: .85rem .95rem; }
-[data-testid="stColumn"]:has(.tw-mark--panel) .ui-grid { gap: .6rem; }
-[data-testid="stColumn"]:has(.tw-mark--panel) .ui-empty { padding: 1.3rem 1rem; }
-
-/* Side-by-side terminal: hairline divider between chart and ticket, and stat
-   grids drop to two-up so cards never shrink into dashboard slivers inside
-   a ~30% rail. */
-@media (min-width: 1025px) {
-  [data-testid="stColumn"]:has(.tw-mark--panel) {
-    border-left: 1px solid var(--ui-border);
-    padding-left: .9rem;
-    margin-left: .2rem;
-  }
-  [data-testid="stColumn"]:has(.tw-mark--panel) .ui-grid--3,
-  [data-testid="stColumn"]:has(.tw-mark--panel) .ui-grid--4 {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-/* Below ~1024px the terminal stacks in trading order: chart first, trade
-   rail beneath it, watchlist last. Streamlit only stacks columns at 640px,
-   which is far too late for order controls. */
+/* At tablet widths the chart remains first and the ticket becomes a full,
+   comfortable-width execution surface beneath it. */
 div:has(> [data-testid="stColumn"]:has(.tw-mark--panel)) { flex-wrap: wrap; }
-[data-testid="stColumn"]:has(.tw-mark--chart),
-[data-testid="stColumn"]:has(.tw-mark--watch) { min-width: 0; }
+[data-testid="stColumn"]:has(.tw-mark--chart) { min-width: 0; }
 @media (max-width: 1024px) {
   [data-testid="stColumn"]:has(.tw-mark--panel),
-  [data-testid="stColumn"]:has(.tw-mark--chart),
-  [data-testid="stColumn"]:has(.tw-mark--watch) {
+  [data-testid="stColumn"]:has(.tw-mark--chart) {
     width: 100%;
     min-width: 100%;
-    border-left: 0;
-    padding-left: 0;
-    margin-left: 0;
   }
-  [data-testid="stColumn"]:has(.tw-mark--chart) { order: 1; }
-  [data-testid="stColumn"]:has(.tw-mark--panel) {
-    order: 2;
-    border-top: 1px solid var(--ui-border);
-    padding-top: .8rem;
-    margin-top: .6rem;
+  [data-testid="stColumn"]:has(.tw-mark--panel) { margin-top: .8rem; }
+}
+@media (max-width: 640px) {
+  [data-testid="stColumn"]:has(.tw-mark--panel) > [data-testid="stVerticalBlock"] {
+    border-radius: 12px 12px 0 0;
+    padding: .85rem .8rem 1rem;
   }
-  [data-testid="stColumn"]:has(.tw-mark--watch) { order: 3; }
+  [data-testid="stColumn"]:has(.tw-mark--panel) [data-testid="stButton"] button {
+    min-height: 2.8rem;
+  }
 }
 </style>
 """
@@ -142,14 +126,13 @@ def render(symbol: str, timeframe: str, starting_capital: float) -> str:
     ui.html_block(_terminal_header(symbol, timeframe))
     _paper_banner()
 
-    # Reserve the chart before strategy actions run. Actions publish a snapshot
-    # during the same rerun, so the chart remains the stable dominant workspace.
-    # Chart-dominant terminal split: watchlist rail, dominant chart, and a
-    # ~32% trade rail (strategy + ticket) wide enough to read comfortably.
-    watchlist_col, chart_col, panel_col = st.columns([0.8, 2.0, 1.3], gap="small")
-    with watchlist_col:
+    # Reserve the chart before strategy actions run. The watchlist lives above
+    # the chart instead of consuming a third desktop column, giving the
+    # execution ticket roughly 40% of the terminal width.
+    chart_col, panel_col = st.columns([1.55, 1.05], gap="medium")
+    with chart_col:
         _render_terminal_watchlist(symbol)
-    chart_slot = chart_col.empty()
+        chart_slot = st.empty()
     with panel_col:
         ui.html_block(_TRADE_PANEL_CSS)
         ui.html_block(
@@ -173,7 +156,7 @@ def render(symbol: str, timeframe: str, starting_capital: float) -> str:
 
 
 def _terminal_header(symbol: str, timeframe: str) -> str:
-    """Compact price strip above the three-column terminal."""
+    """Compact price strip above the chart-and-ticket terminal."""
     snapshot = st.session_state.get("chart_snapshot") or {}
     price = None
     change = None
@@ -798,6 +781,14 @@ def _render_multi_strategy(symbol: str, timeframe: str,
         ui.card(ui.stat("Risk", "1%", f"Minimum 1.5R · default {DEFAULT_RR:g}R")),
         ui.card(ui.stat("Session", "24 / 7", "Time never blocks a setup")),
     ))
+    st.caption(
+        "Historical aggregate backtests run in the read-only Research Hub and "
+        "never modify this paper account."
+    )
+    if st.button("Open Multi-Strategy backtest", key="open_multi_backtest"):
+        from ui import navigation
+        navigation.go(navigation.RESEARCH)
+        st.rerun()
 
     if st.button("Analyze all strategies", key="run_multi_analysis", type="primary"):
         analysis = _run_multi_analysis(symbol, timeframe, starting_capital)

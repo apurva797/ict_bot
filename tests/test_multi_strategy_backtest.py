@@ -4,7 +4,7 @@ from unittest.mock import Mock, patch
 
 import pandas as pd
 
-from conftest import go_to, open_app, rendered
+from conftest import click, go_to, open_app, rendered
 from demo_data import MarketDataError, fetch_historical_market_data, load_uploaded_ohlcv
 from multi_strategy_backtest import WARMUP_CANDLES, run_multi_strategy_backtest
 
@@ -170,6 +170,53 @@ class HistoricalBacktestTests(unittest.TestCase):
         self.assertIn("One configuration, historical only", page)
         # Data is fetched only when asked for, never on page load.
         self.assertTrue(any(item.label == "Load research data" for item in app.button))
+
+    def test_streamlit_exposes_aggregate_multi_strategy_backtest(self):
+        """The active routed Research Hub exposes the aggregate simulator."""
+        app = go_to(open_app(), "Research")
+        self.assertFalse(list(app.exception))
+        page = rendered(app)
+        self.assertIn("Multi-Strategy backtest", page)
+        self.assertTrue(any(
+            item.label == "Run Multi-Strategy backtest" for item in app.button
+        ))
+
+    def test_multi_strategy_backtest_result_is_published_without_paper_state(self):
+        """A research run stores measurements but does not create a paper account."""
+        import ui.research.multi_strategy as multi_research
+
+        historical = candles(106)
+        loaded = type("Loaded", (), {
+            "ok": True, "frame": historical, "source": "Test historical data",
+            "used_fallback": False, "error": "",
+        })()
+        measured = {
+            "metrics": {
+                "Initial capital": 10_000.0, "Final capital": 10_010.0,
+                "Total P&L": 10.0, "Return %": 0.1, "Total trades": 1,
+                "Winning trades": 1, "Losing trades": 0, "Win rate %": 100.0,
+                "Profit factor": float("inf"), "Average R": 0.2,
+                "Max drawdown %": 0.0, "Blocked signals": 0,
+                "Executed signals": 1,
+            },
+            "strategy_breakdown": pd.DataFrame({"Strategy": ["TREND"]}),
+            "equity": pd.DataFrame(
+                {"equity": [10_000.0, 10_010.0], "drawdown_pct": [0.0, 0.0]},
+                index=historical.index[-2:],
+            ),
+            "trades": pd.DataFrame(),
+            "blocked_signals": pd.DataFrame(),
+            "source": None, "symbol": "BTC/USDT", "timeframe": "5m",
+            "start": historical.index[0], "end": historical.index[-1],
+        }
+        with patch("ui.marketdata.load", return_value=loaded), patch.object(
+                multi_research, "run_multi_strategy_backtest",
+                return_value=measured):
+            app = go_to(open_app(), "Research")
+            app = click(app, "Run Multi-Strategy backtest")
+        self.assertFalse(list(app.exception))
+        self.assertIn("research_multi_strategy_backtest", app.session_state)
+        self.assertEqual(app.session_state.get("paper_accounts"), {})
 
 
 if __name__ == "__main__":

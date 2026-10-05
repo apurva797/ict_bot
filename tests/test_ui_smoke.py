@@ -16,7 +16,7 @@ from unittest.mock import patch
 import demo_data
 from conftest import click, go_to, open_app, pick_strategy
 
-ROUTES = ("Home", "Markets", "Trade", "Portfolio", "Research")
+ROUTES = ("Home", "Markets", "Trade", "Portfolio", "Research", "Settings")
 STRATEGIES = ("ARJUNA Strategy", "Quant Strategy", "AI Strategy",
               "Multi-Strategy Engine")
 
@@ -42,6 +42,33 @@ class ScreenSmokeTests(unittest.TestCase):
                 with self.subTest(route=route):
                     app = go_to(open_app(), route)
                     self.assertFalse(list(app.exception))
+                    self.assertFalse(app.session_state.get("ui_palette_open", False))
+                    self.assertFalse(app.session_state.get("ui_shortcuts_open", False))
+
+    def test_trade_starts_with_closed_overlays_and_a_primary_panel(self):
+        """Trade navigation must not open command overlays or hide the ticket."""
+        with patch("demo_data.fetch_market_data", return_value=sample_result()):
+            app = go_to(open_app(), "Trade")
+        self.assertFalse(list(app.exception))
+        self.assertFalse(app.session_state.get("ui_palette_open", False))
+        self.assertFalse(app.session_state.get("ui_shortcuts_open", False))
+        self.assertTrue(any("Trade panel" in item.value for item in app.markdown))
+        self.assertTrue(any(item.label == "Analyze all strategies" for item in app.button))
+
+    def test_palette_requires_explicit_trigger_and_navigation_closes_it(self):
+        """The optional overlay must never be a side effect of route changes."""
+        with patch("demo_data.fetch_market_data", return_value=sample_result()):
+            app = open_app()
+            self.assertFalse(any("Commands" in item.value for item in app.markdown))
+            app = click(app, "Search  (Ctrl+K)")
+            self.assertTrue(any("Commands" in item.value for item in app.markdown))
+            self.assertFalse(app.session_state.get("ui_palette_open", False))
+            for route in ROUTES:
+                with self.subTest(route=route):
+                    app = go_to(app, route)
+                    self.assertFalse(any("Commands" in item.value
+                                         for item in app.markdown))
+                    self.assertFalse(app.session_state.get("ui_palette_open", False))
 
     def test_every_strategy_panel_renders_without_exceptions(self):
         with patch("demo_data.fetch_market_data", return_value=sample_result()):
