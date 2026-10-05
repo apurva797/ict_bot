@@ -180,6 +180,12 @@ class HistoricalBacktestTests(unittest.TestCase):
         self.assertTrue(any(
             item.label == "Run Multi-Strategy backtest" for item in app.button
         ))
+        self.assertTrue(any(item.label == "Backtest start" for item in app.date_input))
+        self.assertTrue(any(item.label == "Backtest end" for item in app.date_input))
+        self.assertTrue(any(item.label == "Fee rate (%)" for item in app.number_input))
+        self.assertTrue(any(item.label == "Slippage rate (%)" for item in app.number_input))
+        self.assertTrue(any(item.label == "Compare strategies individually"
+                            for item in app.checkbox))
 
     def test_multi_strategy_backtest_result_is_published_without_paper_state(self):
         """A research run stores measurements but does not create a paper account."""

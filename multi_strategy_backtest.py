@@ -69,8 +69,14 @@ def run_multi_strategy_backtest(
     open_positions = []
     trades, blocked = [], []
     equity = []
-    strategy_stats = {name: {"trades": 0, "wins": 0, "losses": 0, "pnl": 0.0, "r_values": []}
-                      for name in names}
+    strategy_stats = {
+        name: {
+            "trades": 0, "wins": 0, "losses": 0, "pnl": 0.0,
+            "attributed_pnl": 0.0, "attributed_peak": 0.0,
+            "attributed_drawdown": 0.0, "r_values": [],
+        }
+        for name in names
+    }
     last_entry_at = None
     daily_entries = defaultdict(int)
     daily_r = defaultdict(float)
@@ -197,7 +203,8 @@ def run_multi_strategy_backtest(
     equity_frame = pd.DataFrame(equity).set_index("time") if equity else pd.DataFrame(
         columns=["equity", "drawdown_pct"], index=pd.DatetimeIndex([], name="time"))
     metrics = _metrics(float(starting_capital), balance, trades_frame, blocked, max_drawdown)
-    breakdown = _strategy_breakdown(strategy_stats)
+    metrics["Exposure %"] = _exposure_percent(trades_frame, frame.index[0], frame.index[-1])
+    breakdown = _strategy_breakdown(strategy_stats, float(starting_capital))
     return {
         "metrics": metrics, "trades": trades_frame, "equity": equity_frame,
         "strategy_breakdown": breakdown, "blocked_signals": pd.DataFrame(blocked),
@@ -294,13 +301,22 @@ def _close_position(position, timestamp, raw_exit, reason, balance_ref, fee_rate
         "risk_amount": planned_risk, "opened_at": position["opened_at"], "closed_at": timestamp,
     }
     trades.append(trade)
-    for name in position["strategies"]:
+    contributors = position["strategies"] or []
+    allocation = pnl / len(contributors) if contributors else 0.0
+    for name in contributors:
         if name in strategy_stats:
             stats = strategy_stats[name]
             stats["trades"] += 1
             stats["wins"] += int(pnl > 0)
             stats["losses"] += int(pnl < 0)
             stats["pnl"] += pnl
+            stats["attributed_pnl"] += allocation
+            stats["attributed_peak"] = max(
+                stats["attributed_peak"], stats["attributed_pnl"])
+            stats["attributed_drawdown"] = max(
+                stats["attributed_drawdown"],
+                stats["attributed_peak"] - stats["attributed_pnl"],
+            )
             stats["r_values"].append(r_multiple)
 
 
@@ -336,6 +352,7 @@ def _metrics(starting, ending, trades, blocked, max_drawdown):
         "Winning trades": wins, "Losing trades": losses,
         "Win rate %": wins / count * 100 if count else 0.0,
         "Profit factor": positive / negative if negative else (math.inf if positive else 0.0),
+        "Expectancy": float(trades["pnl"].mean()) if count else 0.0,
         "Average R": float(trades["r_multiple"].mean()) if count else 0.0,
         "Max drawdown %": max_drawdown * 100, "Maximum consecutive wins": streak_wins,
         "Maximum consecutive losses": streak_losses,
@@ -346,7 +363,27 @@ def _metrics(starting, ending, trades, blocked, max_drawdown):
     }
 
 
-def _strategy_breakdown(stats):
+def _exposure_percent(trades, start, end):
+    """Return the observed time with at least one open simulated position."""
+    if trades.empty or end <= start:
+        return 0.0
+    intervals = sorted((pd.Timestamp(row.opened_at), pd.Timestamp(row.closed_at))
+                       for row in trades.itertuples())
+    covered = 0.0
+    current_start, current_end = intervals[0]
+    for interval_start, interval_end in intervals[1:]:
+        if interval_start <= current_end:
+            current_end = max(current_end, interval_end)
+        else:
+            covered += (current_end - current_start).total_seconds()
+            current_start, current_end = interval_start, interval_end
+    covered += (current_end - current_start).total_seconds()
+    total = (pd.Timestamp(end) - pd.Timestamp(start)).total_seconds()
+    return covered / total * 100 if total > 0 else 0.0
+
+
+def _strategy_breakdown(stats, starting):
+    total_pnl = sum(values["attributed_pnl"] for values in stats.values())
     rows = []
     for name, values in stats.items():
         count = values["trades"]
@@ -354,6 +391,10 @@ def _strategy_breakdown(stats):
             "Strategy": "ARJUNA" if name == "ICT" else name,
             "Trades": count, "Wins": values["wins"], "Losses": values["losses"],
             "Win Rate %": values["wins"] / count * 100 if count else 0.0,
-            "P&L": values["pnl"], "Avg R": sum(values["r_values"]) / count if count else 0.0,
+            "P&L": values["attributed_pnl"],
+            "Return %": values["attributed_pnl"] / starting * 100 if starting else 0.0,
+            "Contribution %": values["attributed_pnl"] / total_pnl * 100 if total_pnl else 0.0,
+            "Max Drawdown %": values["attributed_drawdown"] / starting * 100 if starting else 0.0,
+            "Avg R": sum(values["r_values"]) / count if count else 0.0,
         })
     return pd.DataFrame(rows)

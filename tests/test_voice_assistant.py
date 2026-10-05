@@ -5,7 +5,8 @@ from unittest.mock import patch
 
 import pandas as pd
 
-from ui.voice_assistant import parse_intent, _reply
+from ui.voice_assistant import (StrategyAwareVoiceContext, build_context,
+                                parse_intent, _reply)
 
 
 class VoiceAssistantTests(unittest.TestCase):
@@ -35,3 +36,20 @@ class VoiceAssistantTests(unittest.TestCase):
         with patch("ui.voice_assistant.st.session_state", {"shell_symbol": "ETH/USDT"}):
             reply = _reply(parse_intent("analyse ETH"), "Trade")
         self.assertIn("not loaded", reply)
+
+    def test_context_is_strategy_aware_without_secrets(self):
+        with patch("ui.voice_assistant.st.session_state", {
+            "strategy_choice": "Quant Strategy",
+            "shell_symbol": "ETH/USDT",
+            "shell_timeframe": "15m",
+            "research_multi_strategy_backtest": {
+                "backtest_config": {"start": "2026-01-01"},
+                "metrics": {"Max drawdown %": 4.0},
+            },
+        }):
+            context = build_context("Trade")
+        self.assertEqual(context, StrategyAwareVoiceContext(
+            strategy="Quant", symbol="ETH/USDT", timeframe="15m",
+            screen="Trade", backtest_configuration={"start": "2026-01-01"},
+            visible_metrics={"Max drawdown %": 4.0},
+        ))

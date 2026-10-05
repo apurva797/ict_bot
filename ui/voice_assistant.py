@@ -9,7 +9,9 @@ execution action is reachable from this module.
 from __future__ import annotations
 
 import re
+import math
 from dataclasses import dataclass
+from typing import Any
 
 import streamlit as st
 
@@ -102,6 +104,40 @@ class VoiceIntent:
     language: str = "en"
 
 
+@dataclass(frozen=True)
+class StrategyAwareVoiceContext:
+    """Safe, display-only context supplied by the current platform surface."""
+
+    strategy: str
+    symbol: str
+    timeframe: str
+    screen: str
+    backtest_configuration: dict[str, Any] | None = None
+    visible_metrics: dict[str, Any] | None = None
+
+
+def build_context(current_route: str) -> StrategyAwareVoiceContext:
+    """Build context from session state without including credentials or secrets."""
+    strategy = str(st.session_state.get("strategy_choice", "") or "")
+    if strategy == "ARJUNA Strategy":
+        strategy = "ARJUNA"
+    elif strategy == "Quant Strategy":
+        strategy = "Quant"
+    elif strategy == "Multi-Strategy Engine":
+        strategy = "Multi-Strategy"
+    elif strategy == "AI Strategy":
+        strategy = "Custom Strategy"
+    result = st.session_state.get("research_multi_strategy_backtest") or {}
+    return StrategyAwareVoiceContext(
+        strategy=strategy or "Platform",
+        symbol=str(st.session_state.get("shell_symbol", "BTC/USDT")),
+        timeframe=str(st.session_state.get("shell_timeframe", "5m")),
+        screen=current_route,
+        backtest_configuration=result.get("backtest_config"),
+        visible_metrics=result.get("metrics"),
+    )
+
+
 def _language(text: str) -> str:
     """Classify only the response register; this is not a translation claim."""
     lowered = text.lower()
@@ -150,10 +186,12 @@ def parse_intent(text: str) -> VoiceIntent:
     return VoiceIntent(action, symbol, timeframe, _language(normalized))
 
 
-def _reply(intent: VoiceIntent, current_route: str) -> str:
+def _reply(intent: VoiceIntent, current_route: str,
+           context: StrategyAwareVoiceContext | None = None) -> str:
     """Build a response from actual screen state, never invented market facts."""
     symbol = intent.symbol or st.session_state.get("shell_symbol", "BTC/USDT")
     language = intent.language == "hinglish"
+    context = context or build_context(current_route)
     if intent.action == "unknown":
         return ("Main sirf safe market, research, portfolio aur chart actions handle "
                 "kar sakta hoon. Asset aur request batao." if language else
@@ -163,6 +201,13 @@ def _reply(intent: VoiceIntent, current_route: str) -> str:
         return (f"{symbol} selected hai. Analysis, risk ya backtest ke baare mein "
                 "pooch sakte ho." if language else
                 f"{symbol} is selected. You can ask for analysis, risk, or a backtest.")
+    if intent.action == "explain" and intent.symbol is None and context.visible_metrics:
+        metrics = context.visible_metrics
+        drawdown = metrics.get("Max drawdown %")
+        return (f"{context.strategy} ka measured max drawdown "
+                f"{float(drawdown):.2f}% hai." if language else
+                f"{context.strategy}'s measured maximum drawdown is "
+                f"{float(drawdown):.2f}%.")
     if intent.action == "timeframe":
         return (f"Chart {intent.timeframe} timeframe par set kar diya." if language else
                 f"The chart timeframe is set to {intent.timeframe}.")
@@ -213,7 +258,8 @@ def _apply(intent: VoiceIntent) -> None:
         st.session_state["strategy_choice"] = "Quant Strategy"
 
 
-def _component(language: str, speak_text: str):
+def _component(language: str, speak_text: str,
+               context: StrategyAwareVoiceContext):
     from streamlit.components.v2.get_bidi_component_manager import get_bidi_component_manager
     manager_id = id(get_bidi_component_manager())
     component = _COMPONENTS_BY_RUNTIME.get(manager_id)
@@ -221,10 +267,22 @@ def _component(language: str, speak_text: str):
         component = st.components.v2.component(
             "voice_research_avatar", html=_HTML, css=_CSS, js=_JS)
         _COMPONENTS_BY_RUNTIME[manager_id] = component
+    metrics = {
+        key: (None if isinstance(value, float) and not math.isfinite(value) else value)
+        for key, value in (context.visible_metrics or {}).items()
+        if isinstance(value, (int, float, str, type(None)))
+    }
     return component(
         key="voice_research_avatar_instance",
         data={"language": "hi-IN" if language == "hi" else "en-IN",
-              "speak_text": speak_text, "reply_language": "hi-IN" if language == "hi" else "en-IN"},
+              "speak_text": speak_text,
+              "reply_language": "hi-IN" if language == "hi" else "en-IN",
+              "context": {
+                  "strategy": context.strategy, "symbol": context.symbol,
+                  "timeframe": context.timeframe, "screen": context.screen,
+                  "backtest_configuration": context.backtest_configuration,
+                  "visible_metrics": metrics,
+              }},
         default={"transcript": "", "status": ""},
         on_transcript_change=lambda: None, on_status_change=lambda: None,
         width="stretch", height=72,
@@ -232,16 +290,18 @@ def _component(language: str, speak_text: str):
 
 
 @st.dialog("Voice research assistant", width="small")
-def _dialog(current_route: str) -> None:
+def _dialog(context: StrategyAwareVoiceContext) -> None:
     """Compact, user-initiated voice interaction surface."""
-    st.caption("English, Hindi, or Hinglish · read-only assistant")
-    response = _component("en", st.session_state.get("voice_assistant_reply", ""))
+    st.caption(
+        f"{context.strategy} · {context.symbol} · {context.timeframe} · "
+        f"{context.screen} · English, Hindi, or Hinglish · read-only")
+    response = _component("en", st.session_state.get("voice_assistant_reply", ""), context)
     transcript = " ".join(str(getattr(response, "transcript", "") or "").split())[:500]
     if transcript and transcript != st.session_state.get(LAST_TRANSCRIPT_KEY):
         st.session_state[LAST_TRANSCRIPT_KEY] = transcript
         intent = parse_intent(transcript)
         _apply(intent)
-        st.session_state["voice_assistant_reply"] = _reply(intent, current_route)
+        st.session_state["voice_assistant_reply"] = _reply(intent, context.screen, context)
         st.session_state[OPEN_KEY] = True
         st.rerun()
     typed = st.text_input("Or type your request", key="voice_assistant_text",
@@ -250,7 +310,7 @@ def _dialog(current_route: str) -> None:
                  width="stretch") and typed.strip():
         intent = parse_intent(typed)
         _apply(intent)
-        st.session_state["voice_assistant_reply"] = _reply(intent, current_route)
+        st.session_state["voice_assistant_reply"] = _reply(intent, context.screen, context)
         st.session_state[OPEN_KEY] = True
         st.rerun()
     reply = st.session_state.get("voice_assistant_reply")
@@ -259,18 +319,22 @@ def _dialog(current_route: str) -> None:
     st.caption("Paper mode only. No orders, code, or database actions are available.")
 
 
-def render_avatar(current_route: str) -> None:
+def render_avatar(current_route: str,
+                  context: StrategyAwareVoiceContext | None = None) -> None:
     """Render the top-navigation avatar and one-time Trade attention cue."""
+    context = context or build_context(current_route)
     previous = st.session_state.get(LAST_ROUTE_KEY)
     entering_trade = current_route == navigation.TRADE and previous != navigation.TRADE
     should_attention = entering_trade and not st.session_state.get(ATTENTION_KEY, False)
     st.session_state[LAST_ROUTE_KEY] = current_route
     if should_attention:
         st.session_state[ATTENTION_KEY] = True
-        ui.html_block(
-            '<div class="voice-trade-attention" style="animation:voice-attention 6s '
-            'ease-out forwards"><strong>Trade setup samajhna hai?</strong> Mujhse poochho.</div>'
-        )
+        message = ("Multiple strategies compare karni hain? Mujhse poochho."
+                   if context.strategy == "Multi-Strategy"
+                   else f"{context.strategy} selected hai. Setup, risk ya backtest ke "
+                        "baare mein pooch sakte ho.")
+        ui.html_block(f'<div class="voice-trade-attention" style="animation:voice-attention 6s '
+                      f'ease-out forwards"><strong>{ui.esc(message)}</strong></div>')
     st.markdown(
         "<style>.voice-trade-attention{position:fixed;right:1.5rem;top:4.7rem;z-index:5;"
         "padding:.45rem .7rem;border-radius:999px;background:var(--ui-surface);"
@@ -283,6 +347,7 @@ def render_avatar(current_route: str) -> None:
         {OPEN_KEY: True}), help="Ask the voice research assistant")
     if st.session_state.pop(OPEN_KEY, False):
         st.session_state["voice_assistant_reply"] = (
-            "Haan, batao kya analyse karna hai?" if current_route == navigation.TRADE
-            else "Haan, batao platform mein kya dhoondhna hai?")
-        _dialog(current_route)
+            (f"{context.strategy} selected hai. Haan, batao kya analyse karna hai?"
+             if current_route == navigation.TRADE else
+             "Haan, batao platform mein kya dhoondhna hai?"))
+        _dialog(context)
