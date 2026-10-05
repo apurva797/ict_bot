@@ -7,9 +7,12 @@ maxUploadSize = 1
 [browser]
 gatherUsageStats = false
 
+# The product is a dark trading terminal. These values match ui/theme.py's
+# DARK palette so Streamlit's own chrome (dataframes, tooltips, skeletons)
+# paints in the correct theme before the design-system stylesheet applies.
 [theme]
-base = "light"
-primaryColor = "#1E6BFF"
-backgroundColor = "#FFFFFF"
-secondaryBackgroundColor = "#F4F7FB"
-textColor = "#142033"
+base = "dark"
+primaryColor = "#3FC0D0"
+backgroundColor = "#070A12"
+secondaryBackgroundColor = "#101624"
+textColor = "#E9EEF8"

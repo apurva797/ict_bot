@@ -9,6 +9,7 @@ panel or a stale price presented as live.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from typing import Sequence
 
 import pandas as pd
@@ -109,6 +110,9 @@ def chart_snapshot(result: LoadResult) -> dict:
         "symbol": result.symbol,
         "timeframe": result.timeframe,
         "source": result.source,
+        # When this snapshot was taken, so the top bar can state data age
+        # truthfully instead of implying a live feed.
+        "loaded_at": datetime.now(timezone.utc).isoformat(),
     }
 
 

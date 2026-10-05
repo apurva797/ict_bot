@@ -29,7 +29,7 @@ from platform_core.status import DataHealth, Status
 from platform_ui import (render_data_health, render_ict_overlay_toggles,
                          render_ict_stages, render_indicator_controls,
                          render_mobile_nav, render_paper_banner, render_status)
-from ui import navigation
+from ui import commands, navigation, topbar
 from ui.research import screens as research_screen
 from ui.screens import home as home_screen
 from ui.screens import markets as markets_screen
@@ -63,11 +63,12 @@ st.set_page_config(page_title="Arjun Trading Platform", page_icon="📊", layout
 def render_routed_app() -> None:
     """Render the compact platform shell while keeping engines screen-owned."""
     inject_ui_design_system(SETTINGS)
+    # Progressive-enhancement key listener (Ctrl+K, ?, g-then-x). Failure
+    # degrades to the buttons rendered below, never to a missing feature.
+    commands.mount_accelerator()
+    topbar.render(SETTINGS)
+    commands.render_palette_launcher()
     with st.sidebar:
-        st.markdown("<div class='ui-brand'>ARJUN <span>TRADING PLATFORM</span></div>",
-                    unsafe_allow_html=True)
-        st.caption("Multi-strategy paper terminal")
-        st.divider()
         st.markdown("**Workspace**")
         sidebar_market = st.selectbox(
             "Symbol", ["BTC/USDT", "ETH/USDT", "SOL/USDT"], key="shell_symbol")
@@ -80,13 +81,9 @@ def render_routed_app() -> None:
         st.caption("Execution")
         st.markdown("PAPER MODE")
         st.caption("Live orders are disabled. Risk controls remain active.")
+        st.divider()
+        commands.render_shortcuts_card()
 
-    st.markdown(
-        "<div class='ui-topbar'><div><div class='ui-eyebrow'>MULTI-STRATEGY TERMINAL</div>"
-        "<div class='ui-shell-title'>ARJUN Trading Platform</div></div>"
-        "<div class='ui-topbar-meta'>SESSION ONLY · UTC</div></div>",
-        unsafe_allow_html=True,
-    )
     route = navigation.render()
     if route == navigation.HOME:
         home_screen.render()

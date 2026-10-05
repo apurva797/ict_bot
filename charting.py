@@ -22,6 +22,54 @@ LIGHTWEIGHT_CHARTS_VERSION = "5.2.0"
 CHART_HEIGHT = 470
 _REQUIRED_COLUMNS = ("open", "high", "low", "close", "volume")
 
+# Fallback chart theme matching the component's original light styling; used
+# when a caller (or a unit test) does not supply an active palette.
+_DEFAULT_CHART_THEME = {
+    "background": "#ffffff",
+    "text": "#222222",
+    "grid": "#f1f3f5",
+    "crosshair": "#9aa4b2",
+    "accent": "#147d92",
+    "up": "#26a69a",
+    "down": "#ef5350",
+    "up_volume": "rgba(38, 166, 154, 0.45)",
+    "down_volume": "rgba(239, 83, 80, 0.45)",
+}
+
+
+def _rgba(hex_color: str, alpha: float) -> str:
+    """``#rrggbb`` + alpha → ``rgba(...)`` for volume-bar fills."""
+    value = str(hex_color).lstrip("#")
+    if len(value) != 6:
+        return f"rgba(128, 128, 128, {alpha})"
+    try:
+        channels = [int(value[index:index + 2], 16) for index in (0, 2, 4)]
+    except ValueError:
+        return f"rgba(128, 128, 128, {alpha})"
+    return f"rgba({channels[0]}, {channels[1]}, {channels[2]}, {alpha})"
+
+
+def chart_theme(palette: dict | None) -> dict:
+    """Map design-system tokens onto Lightweight Charts colour slots.
+
+    The chart sits directly on the page background, so it must paint with the
+    same palette as everything around it; a white chart inside a dark
+    terminal would break the one-surface rule the product follows.
+    """
+    if not palette:
+        return dict(_DEFAULT_CHART_THEME)
+    return {
+        "background": palette.get("bg", _DEFAULT_CHART_THEME["background"]),
+        "text": palette.get("text_faint", _DEFAULT_CHART_THEME["text"]),
+        "grid": palette.get("border_subtle", _DEFAULT_CHART_THEME["grid"]),
+        "crosshair": palette.get("border_strong", _DEFAULT_CHART_THEME["crosshair"]),
+        "accent": palette.get("accent", _DEFAULT_CHART_THEME["accent"]),
+        "up": palette.get("profit", _DEFAULT_CHART_THEME["up"]),
+        "down": palette.get("loss", _DEFAULT_CHART_THEME["down"]),
+        "up_volume": _rgba(palette.get("profit", "#26a69a"), 0.45),
+        "down_volume": _rgba(palette.get("loss", "#ef5350"), 0.45),
+    }
+
 
 def normalize_chart_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
     """Return valid UTC OHLCV indexed by unique, ascending Unix-second candles.
@@ -63,7 +111,9 @@ def normalize_chart_ohlcv(frame: pd.DataFrame) -> pd.DataFrame:
     return result
 
 
-def _chart_rows(frame: pd.DataFrame) -> tuple[list[dict], list[dict]]:
+def _chart_rows(frame: pd.DataFrame,
+                theme: dict | None = None) -> tuple[list[dict], list[dict]]:
+    colors = theme or _DEFAULT_CHART_THEME
     candles: list[dict] = []
     volumes: list[dict] = []
     for timestamp, row in frame.iterrows():
@@ -78,7 +128,8 @@ def _chart_rows(frame: pd.DataFrame) -> tuple[list[dict], list[dict]]:
         volumes.append({
             "time": time_seconds,
             "value": float(row.volume),
-            "color": "rgba(38, 166, 154, 0.45)" if row.close >= row.open else "rgba(239, 83, 80, 0.45)",
+            "color": colors["up_volume"] if row.close >= row.open
+            else colors["down_volume"],
         })
     return candles, volumes
 
@@ -108,15 +159,19 @@ def make_chart_payload(frame: pd.DataFrame, title: str, dataset_id: str,
                        reset_id: int = 0, height: int = CHART_HEIGHT,
                        overlays: list | None = None, ict: dict | None = None,
                        drawings: list | None = None,
-                       price_decimals: int | None = None) -> dict:
+                       price_decimals: int | None = None,
+                       palette: dict | None = None) -> dict:
     """Build the JSON payload for one chart render.
 
     ``overlays`` are pre-computed indicator series, ``ict`` holds detected
     structures, and ``drawings`` are user annotations. All are optional so the
-    existing call sites keep working unchanged.
+    existing call sites keep working unchanged. ``palette`` is the active
+    design-system token set, mapped to chart colours via :func:`chart_theme`;
+    when omitted the original light styling is used.
     """
     normalized = normalize_chart_ohlcv(frame)
-    candles, volumes = _chart_rows(normalized)
+    colors = chart_theme(palette)
+    candles, volumes = _chart_rows(normalized, colors)
     payload_overlays = _sanitize_overlays(overlays or [], normalized)
     payload_ict = _sanitize_ict(ict, normalized)
     payload_drawings = _sanitize_drawings(drawings or [])
@@ -137,6 +192,7 @@ def make_chart_payload(frame: pd.DataFrame, title: str, dataset_id: str,
         "title": str(title),
         "reset_id": int(reset_id),
         "height": max(300, int(height)),
+        "theme": colors,
     }
 
 
@@ -295,7 +351,7 @@ def _sanitize_drawings(drawings: list) -> list[dict]:
 _HTML = '<div class="chart-status" aria-live="polite">Loading chart…</div><div class="chart-root" role="img" aria-label="OHLCV candlestick and volume chart"></div>'
 _CSS = f"""
 :host {{ display:block; width:100%; min-width:0; }}
-.chart-status {{ box-sizing:border-box; height:30px; padding:6px 8px; color:#495057; font:13px sans-serif; overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }}
+.chart-status {{ box-sizing:border-box; height:30px; padding:6px 8px; color:var(--ui-text-faint, #6c7896); font:13px var(--ui-font, sans-serif); overflow:hidden; white-space:nowrap; text-overflow:ellipsis; }}
 .chart-root {{ box-sizing:border-box; width:100%; height:{CHART_HEIGHT}px; min-height:300px; }}
 """
 _JS = r"""
@@ -340,8 +396,39 @@ function restoreViewport(state) {
   }
 }
 
+// Paint layout/grid/crosshair/candles from the payload's palette so the chart
+// always matches the page theme; a change re-applies options in place.
+function applyTheme(state, theme) {
+  if (!state.chart) return;
+  const resolved = theme || {
+    background: "#ffffff", text: "#222222", grid: "#f1f3f5",
+    crosshair: "#9aa4b2", accent: "#147d92",
+    up: "#26a69a", down: "#ef5350"
+  };
+  const key = JSON.stringify(resolved);
+  if (state.themeKey === key) return;
+  state.themeKey = key;
+  state.chart.applyOptions({
+    layout: { background: { type: "solid", color: resolved.background }, textColor: resolved.text, attributionLogo: true },
+    grid: { vertLines: { color: resolved.grid }, horzLines: { color: resolved.grid } },
+    crosshair: {
+      vertLine: { color: resolved.crosshair, width: 1, style: 3, labelBackgroundColor: resolved.accent },
+      horzLine: { color: resolved.crosshair, width: 1, style: 3, labelBackgroundColor: resolved.accent }
+    },
+    timeScale: { borderColor: resolved.grid },
+    rightPriceScale: { borderColor: resolved.grid }
+  });
+  if (state.price) {
+    state.price.applyOptions({
+      upColor: resolved.up, downColor: resolved.down,
+      wickUpColor: resolved.up, wickDownColor: resolved.down
+    });
+  }
+}
+
 function applyData(state, data) {
   if (!state.chart || !data || !Array.isArray(data.candles)) return;
+  applyTheme(state, data.theme);
   const chartHeight = Math.max(300, Number(data.height) || 470);
   if (state.chartHeight !== chartHeight) {
     state.root.style.height = `${chartHeight}px`;
@@ -506,18 +593,29 @@ export default function(component) {
     state.loading = true;
     loadLibrary().then((library) => {
       state.library = library;
+      const theme = (state.pendingData && state.pendingData.theme) || {
+        background: "#ffffff", text: "#222222", grid: "#f1f3f5",
+        crosshair: "#9aa4b2", accent: "#147d92",
+        up: "#26a69a", down: "#ef5350"
+      };
       state.chart = library.createChart(state.root, {
         width: Math.max(1, state.root.clientWidth), height: Math.max(300, Number(state.pendingData.height) || 470),
-        layout: { background: { type: "solid", color: "#ffffff" }, textColor: "#222", attributionLogo: true },
-        grid: { vertLines: { color: "#f1f3f5" }, horzLines: { color: "#f1f3f5" } },
-        timeScale: { timeVisible: true, secondsVisible: false, shiftVisibleRangeOnNewBar: false },
+        layout: { background: { type: "solid", color: theme.background }, textColor: theme.text, attributionLogo: true },
+        grid: { vertLines: { color: theme.grid }, horzLines: { color: theme.grid } },
+        crosshair: {
+          vertLine: { color: theme.crosshair, width: 1, style: 3, labelBackgroundColor: theme.accent },
+          horzLine: { color: theme.crosshair, width: 1, style: 3, labelBackgroundColor: theme.accent }
+        },
+        timeScale: { timeVisible: true, secondsVisible: false, shiftVisibleRangeOnNewBar: false, borderColor: theme.grid },
+        rightPriceScale: { borderColor: theme.grid },
         kineticScroll: { mouse: false, touch: false },
         handleScroll: { mouseWheel: true, pressedMouseMove: true, horzTouchDrag: true, vertTouchDrag: false },
         handleScale: { axisPressedMouseMove: true, mouseWheel: true, pinch: true }
       });
+      state.themeKey = JSON.stringify(theme);
       state.price = state.chart.addSeries(library.CandlestickSeries, {
-        upColor: "#26a69a", downColor: "#ef5350", borderVisible: false,
-        wickUpColor: "#26a69a", wickDownColor: "#ef5350",
+        upColor: theme.up, downColor: theme.down, borderVisible: false,
+        wickUpColor: theme.up, wickDownColor: theme.down,
         priceLineVisible: false, lastValueVisible: true
       });
       state.volume = state.chart.addSeries(library.HistogramSeries, {
@@ -560,9 +658,15 @@ def render_ohlcv_chart(frame: pd.DataFrame, title: str = "OHLCV", height: int = 
     """Mount one stable v2 component and send normalized OHLCV plus overlays."""
     if frame is None or frame.empty:
         return
+    # The chart paints with the same palette as the page. Resolved here (not
+    # at import) so the component follows the session's theme switch without
+    # threading state through every call site.
+    from ui import theme as ui_theme
+
     payload = make_chart_payload(frame, title, dataset_id, reset_id, height,
                                  overlays=overlays, ict=ict, drawings=drawings,
-                                 price_decimals=price_decimals)
+                                 price_decimals=price_decimals,
+                                 palette=ui_theme.active_palette())
     # Component definitions belong to a Streamlit runtime. Register once per
     # runtime (including isolated AppTest runtimes), not once per rerun.
     from streamlit.components.v2.get_bidi_component_manager import get_bidi_component_manager
