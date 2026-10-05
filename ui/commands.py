@@ -188,11 +188,12 @@ def render_launcher() -> None:
 
 
 def render_palette_launcher() -> None:
-    """Render the collapsed palette entry point plus inline results."""
-    if st.button("Search  (Ctrl+K)", key="ui_palette_launch",
-                 width="stretch"):
-        st.session_state[PALETTE_KEY] = True
-    palette()
+    """Render the launcher and open the palette only after an explicit request."""
+    st.button("Search  (Ctrl+K)", key="ui_palette_launch",
+              width="stretch", on_click=open_palette)
+    if consume(PALETTE_KEY):
+        reset_query()
+        palette()
 
 
 def render_shortcuts_card() -> None:
@@ -206,8 +207,7 @@ def render_shortcuts_card() -> None:
 
 def render_shortcuts_dialog() -> None:
     """Open the shortcuts dialog when requested from any surface."""
-    if st.session_state.get(SHORTCUTS_KEY):
-        st.session_state[SHORTCUTS_KEY] = False
+    if consume(SHORTCUTS_KEY):
         shortcuts()
 
 
@@ -271,7 +271,7 @@ export default function(component) {
     const key = (event.key || "").toLowerCase();
     if ((event.ctrlKey || event.metaKey) && key === "k") {
       event.preventDefault();
-      clickLabeled("⌘K");
+      clickLabeled("Search");
       return;
     }
     if (typing) return;
@@ -288,7 +288,7 @@ export default function(component) {
       const route = routes[key];
       if (route) { event.preventDefault(); clickRoute(route); }
     }
-  }, true);
+  });
   return () => {};
 }
 """
