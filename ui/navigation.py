@@ -84,17 +84,14 @@ def go(route: str) -> None:
 def render(active: str | None = None) -> str:
     """Render navigation and return the active route.
 
-    The segmented control is the real control; the mobile bar below it is
+    The segmented control owns ``ROUTE_KEY``. The mobile bar below it is
     presentational only and is hidden above 768px by the stylesheet.
     """
-    st.session_state.setdefault(ROUTE_KEY, HOME)
     choice = st.segmented_control(
         "Section", list(ROUTES), key=ROUTE_KEY, label_visibility="collapsed",
         width="stretch",
     )
     route = choice if choice in ROUTES else current_route()
-    if route != st.session_state.get(ROUTE_KEY):
-        st.session_state[ROUTE_KEY] = route
     ui.html_block(bottom_nav(route))
     return route
 

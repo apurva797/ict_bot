@@ -29,7 +29,7 @@ from platform_core.status import DataHealth, Status
 from platform_ui import (render_data_health, render_ict_overlay_toggles,
                          render_ict_stages, render_indicator_controls,
                          render_mobile_nav, render_paper_banner, render_status)
-from ui import commands, navigation, topbar
+from ui import commands, navigation, topbar, voice_assistant
 from ui.research import screens as research_screen
 from ui.screens import home as home_screen
 from ui.screens import markets as markets_screen
@@ -67,6 +67,7 @@ def render_routed_app() -> None:
     # degrades to the buttons rendered below, never to a missing feature.
     commands.mount_accelerator()
     topbar.render(SETTINGS)
+    voice_assistant.render_avatar(navigation.current_route())
     commands.render_palette_launcher()
     with st.sidebar:
         st.markdown("**Workspace**")
@@ -1138,4 +1139,3 @@ if paper_accounts:
 
 st.divider()
 st.caption("AI turns natural-language trading ideas into structured, testable strategies. Historical simulation is not a prediction of future results.")
-
