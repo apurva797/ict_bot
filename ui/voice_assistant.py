@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import re
 import math
+import base64
 from dataclasses import dataclass
 from typing import Any
 
@@ -17,12 +18,21 @@ import streamlit as st
 
 from ui import components as ui
 from ui import marketdata, navigation
+from core.ai.provider import AIProviderError, AIProviderNetworkError
+from core.ai.providers.sarvam import SarvamProvider
 
 OPEN_KEY = "voice_assistant_open"
 LAST_TRANSCRIPT_KEY = "voice_assistant_last_transcript"
 ATTENTION_KEY = "voice_trade_attention_seen"
 LAST_ROUTE_KEY = "voice_last_route"
 COMPONENT_UPDATE_KEY = "voice_component_updated"
+VOICE_STATUS_KEY = "voice_assistant_status"
+LAST_AUDIO_KEY = "voice_assistant_last_audio"
+
+VOICE_STATUSES = {
+    "IDLE", "LISTENING", "PROCESSING", "TRANSCRIBING", "RESPONDING",
+    "SUCCESS", "MIC_PERMISSION_DENIED", "STT_ERROR", "AI_ERROR", "NETWORK_ERROR",
+}
 
 _COMPONENTS_BY_RUNTIME: dict[int, object] = {}
 
@@ -30,7 +40,7 @@ _HTML = """
 <div class="voice-avatar-root">
   <div class="voice-avatar" aria-hidden="true"><span>✦</span></div>
   <div class="voice-avatar-state" aria-live="polite"></div>
-  <button class="voice-listen" type="button">Start listening</button>
+  <button class="voice-listen" type="button">Start recording</button>
 </div>
 """
 _CSS = """
@@ -50,7 +60,7 @@ _JS = r"""
 export default function(component) {
   const { data, parentElement, setStateValue } = component;
   let state = parentElement.__voiceAvatar;
-  if (!state) state = parentElement.__voiceAvatar = { recognition: null, lastReply: null };
+  if (!state) state = parentElement.__voiceAvatar = { recorder: null, chunks: [], lastReply: null };
   const button = parentElement.querySelector(".voice-listen");
   const avatar = parentElement.querySelector(".voice-avatar");
   const status = parentElement.querySelector(".voice-avatar-state");
@@ -58,32 +68,43 @@ export default function(component) {
   if (button && !button.__bound) {
     button.__bound = true;
     button.onclick = () => {
-      const Recognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-      if (!Recognition) { setStatus("Voice input is unavailable in this browser. You can type below."); return; }
+      if (!navigator.mediaDevices || !window.MediaRecorder) {
+        setStatus("STT_ERROR"); return;
+      }
       try {
-        const recognition = new Recognition();
-        state.recognition = recognition;
-        recognition.lang = data.language || "en-IN";
-        recognition.interimResults = false;
-        recognition.continuous = false;
-        recognition.onstart = () => {
-          button.disabled = true; button.textContent = "Listening…";
-          if (avatar) avatar.classList.add("listening"); setStatus("Listening…");
-        };
-        recognition.onresult = (event) => {
-          const transcript = Array.from(event.results || []).map((result) => result[0].transcript).join(" ").trim();
-          if (transcript) setStateValue("transcript", transcript);
-          setStatus(transcript ? "Transcript received." : "No speech was detected.");
-        };
-        recognition.onerror = (event) => setStatus(`Microphone: ${event.error || "recognition failed"}.`);
-        recognition.onend = () => {
-          button.disabled = false; button.textContent = "Start listening";
-          if (avatar) avatar.classList.remove("listening");
-        };
-        recognition.start();
-      } catch (_) { setStatus("Could not start the microphone. Check browser permission."); }
+        navigator.mediaDevices.getUserMedia({ audio: true }).then((stream) => {
+          const recorder = new MediaRecorder(stream);
+          state.recorder = recorder; state.chunks = [];
+          recorder.onstart = () => {
+            button.disabled = true; button.textContent = "Recording…";
+            if (avatar) avatar.classList.add("listening"); setStatus("LISTENING");
+          };
+          recorder.ondataavailable = (event) => { if (event.data.size) state.chunks.push(event.data); };
+          recorder.onerror = () => { stream.getTracks().forEach((track) => track.stop()); setStatus("STT_ERROR"); };
+          recorder.onstop = () => {
+            stream.getTracks().forEach((track) => track.stop());
+            button.disabled = false; button.textContent = "Start recording";
+            if (avatar) avatar.classList.remove("listening");
+            setStatus("PROCESSING");
+            const blob = new Blob(state.chunks, { type: recorder.mimeType || "audio/webm" });
+            const reader = new FileReader();
+            reader.onloadend = () => {
+              const encoded = String(reader.result || "").split(",").pop();
+              if (encoded) setStateValue("audio_base64", encoded);
+            };
+            reader.readAsDataURL(blob);
+          };
+          recorder.start();
+          setTimeout(() => { if (recorder.state === "recording") recorder.stop(); }, 15000);
+        }).catch((error) => {
+          setStatus(error && error.name === "NotAllowedError"
+            ? "MIC_PERMISSION_DENIED" : "NETWORK_ERROR");
+        });
+      } catch (_) { setStatus("STT_ERROR"); }
     };
   }
+  if (data.status && status && status.textContent !== data.status) status.textContent = data.status;
+  if (data.status !== "LISTENING" && avatar) avatar.classList.remove("listening");
   if (data.speak_text && state.lastReply !== data.speak_text && window.speechSynthesis) {
     state.lastReply = data.speak_text;
     window.speechSynthesis.cancel();
@@ -103,6 +124,7 @@ class VoiceIntent:
     symbol: str | None = None
     timeframe: str | None = None
     language: str = "en"
+    request: str = ""
 
 
 @dataclass(frozen=True)
@@ -129,13 +151,37 @@ def build_context(current_route: str) -> StrategyAwareVoiceContext:
     elif strategy == "AI Strategy":
         strategy = "Custom Strategy"
     result = st.session_state.get("research_multi_strategy_backtest") or {}
+    metrics = dict(result.get("metrics") or {})
+    strategy_id = ("ict" if strategy == "ARJUNA" else
+                   "quant.trend" if strategy == "Quant" else "multi.strategy")
+    try:
+        from ui import state as paper_state
+        account = paper_state.account_for(
+            strategy_id, str(st.session_state.get("shell_symbol", "BTC/USDT")),
+            str(st.session_state.get("shell_timeframe", "5m")))
+    except (KeyError, TypeError, ValueError):
+        account = None
+    if account:
+        position = account.get("position")
+        metrics.update({
+            "paper_position": position.get("side") if isinstance(position, dict) else "FLAT",
+            "paper_entry": position.get("entry") if isinstance(position, dict) else None,
+            "paper_mark": account.get("last_mark"),
+            "paper_balance": account.get("balance"),
+            "realized_pnl": sum(float(trade.get("net_pnl", 0) or 0)
+                                for trade in account.get("trades", [])),
+        })
+    research = st.session_state.get("research_copilot_analysis")
+    if isinstance(research, dict):
+        metrics["research_summary"] = research.get("summary")
+        metrics["research_risks"] = research.get("key_risks")
     return StrategyAwareVoiceContext(
         strategy=strategy or "Platform",
         symbol=str(st.session_state.get("shell_symbol", "BTC/USDT")),
         timeframe=str(st.session_state.get("shell_timeframe", "5m")),
         screen=current_route,
         backtest_configuration=result.get("backtest_config"),
-        visible_metrics=result.get("metrics"),
+        visible_metrics=metrics,
     )
 
 
@@ -167,7 +213,11 @@ def parse_intent(text: str) -> VoiceIntent:
     symbol = _symbol(normalized)
     timeframe = next((value for value in ("5m", "15m", "1h")
                       if re.search(rf"\b{re.escape(value)}\b", lowered)), None)
-    if any(word in lowered for word in ("portfolio", "positions", "p&l", "pnl")):
+    if any(word in lowered for word in (
+            "buy", "sell", "order", "cancel order", "withdraw", "transfer",
+            "place a trade", "execute trade", "live broker")):
+        action = "execution_blocked"
+    elif any(word in lowered for word in ("portfolio", "position", "positions", "p&l", "pnl")):
         action = "portfolio"
     elif any(word in lowered for word in ("research hub", "backtest", "research")):
         action = "research"
@@ -184,7 +234,7 @@ def parse_intent(text: str) -> VoiceIntent:
         action = "market"
     else:
         action = "unknown"
-    return VoiceIntent(action, symbol, timeframe, _language(normalized))
+    return VoiceIntent(action, symbol, timeframe, _language(normalized), normalized)
 
 
 def _reply(intent: VoiceIntent, current_route: str,
@@ -198,6 +248,11 @@ def _reply(intent: VoiceIntent, current_route: str,
                 "kar sakta hoon. Asset aur request batao." if language else
                 "I can help with safe market, research, portfolio, and chart actions. "
                 "Please name an asset and request.")
+    if intent.action == "execution_blocked":
+        return ("Voice Research Assistant read-only hai. Main BUY, SELL, order, "
+                "withdrawal ya broker action execute nahi kar sakta." if language else
+                "The Voice Research Assistant is read-only and cannot place orders, "
+                "cancel orders, withdraw, transfer funds, or perform broker actions.")
     if intent.action == "market":
         return (f"{symbol} selected hai. Analysis, risk ya backtest ke baare mein "
                 "pooch sakte ho." if language else
@@ -212,6 +267,22 @@ def _reply(intent: VoiceIntent, current_route: str,
     if intent.action == "timeframe":
         return (f"Chart {intent.timeframe} timeframe par set kar diya." if language else
                 f"The chart timeframe is set to {intent.timeframe}.")
+    if intent.action == "portfolio" and any(
+            word in intent.request.lower()
+            for word in ("position", "p&l", "pnl", "paper")):
+        metrics = context.visible_metrics or {}
+        position = metrics.get("paper_position")
+        if position is None:
+            return ("Is information ka reliable data abhi available nahi hai."
+                    if language else
+                    "Reliable paper-position data is not available right now.")
+        mark = metrics.get("paper_mark")
+        balance = metrics.get("paper_balance")
+        return (f"Paper position {position}. Mark {mark if mark is not None else 'available nahi'}; "
+                f"balance {balance if balance is not None else 'available nahi'}."
+                if language else
+                f"Paper position: {position}. Mark: {mark if mark is not None else 'unavailable'}; "
+                f"balance: {balance if balance is not None else 'unavailable'}.")
     if intent.action == "portfolio":
         return ("Portfolio khol raha hoon. Yeh paper/simulation records par based hai."
                 if language else "Opening Portfolio. It contains paper/simulation records only.")
@@ -283,17 +354,57 @@ def _component(language: str, speak_text: str,
         data={"language": "hi-IN" if language == "hi" else "en-IN",
               "speak_text": speak_text,
               "reply_language": "hi-IN" if language == "hi" else "en-IN",
+              "status": st.session_state.get(VOICE_STATUS_KEY, "IDLE"),
               "context": {
                   "strategy": context.strategy, "symbol": context.symbol,
                   "timeframe": context.timeframe, "screen": context.screen,
                   "backtest_configuration": context.backtest_configuration,
                   "visible_metrics": metrics,
               }},
-        default={"transcript": "", "status": ""},
+        default={"transcript": "", "status": "IDLE", "audio_base64": ""},
         on_transcript_change=on_transcript_change,
         on_status_change=lambda: None,
         width="stretch", height=72,
     )
+
+
+@st.cache_data(ttl=60, show_spinner=False)
+def _sarvam_health() -> tuple[bool, str]:
+    """Cache one authenticated provider check instead of probing every rerun."""
+    return SarvamProvider().health_check()
+
+
+def _process_audio(audio_base64: str, context: StrategyAwareVoiceContext) -> None:
+    """Decode and transcribe browser audio entirely on the server."""
+    st.session_state[VOICE_STATUS_KEY] = "TRANSCRIBING"
+    try:
+        audio = base64.b64decode(audio_base64, validate=True)
+        if len(audio) > 10 * 1024 * 1024:
+            raise AIProviderError("Recorded audio is too large.")
+        transcript = SarvamProvider().transcribe(
+            audio, filename="voice.webm", language_code="unknown")
+    except AIProviderNetworkError as exc:
+        st.session_state[VOICE_STATUS_KEY] = "NETWORK_ERROR"
+        st.session_state["voice_assistant_reply"] = str(exc)
+        return
+    except AIProviderError as exc:
+        st.session_state[VOICE_STATUS_KEY] = "STT_ERROR"
+        st.session_state["voice_assistant_reply"] = str(exc)
+        return
+    except (ValueError, base64.binascii.Error):
+        st.session_state[VOICE_STATUS_KEY] = "STT_ERROR"
+        st.session_state["voice_assistant_reply"] = "Recorded audio could not be decoded."
+        return
+    except OSError:
+        st.session_state[VOICE_STATUS_KEY] = "NETWORK_ERROR"
+        st.session_state["voice_assistant_reply"] = "The voice network request failed."
+        return
+    st.session_state[VOICE_STATUS_KEY] = "RESPONDING"
+    intent = parse_intent(transcript[:500])
+    _apply(intent)
+    st.session_state["voice_assistant_reply"] = _reply(intent, context.screen, context)
+    st.session_state[LAST_TRANSCRIPT_KEY] = transcript[:500]
+    st.session_state[VOICE_STATUS_KEY] = "SUCCESS"
 
 
 @st.dialog("Voice research assistant", width="small")
@@ -302,7 +413,19 @@ def _dialog(context: StrategyAwareVoiceContext) -> None:
     st.caption(
         f"{context.strategy} · {context.symbol} · {context.timeframe} · "
         f"{context.screen} · English, Hindi, or Hinglish · read-only")
+    health_ok, health_message = _sarvam_health()
+    st.caption(f"SARVAM  {'🟢 AVAILABLE' if health_ok else '🔴 UNAVAILABLE'}")
+    if not health_ok:
+        st.caption(health_message)
     response = _component("en", st.session_state.get("voice_assistant_reply", ""), context)
+    component_status = str(getattr(response, "status", "") or "")
+    if component_status in VOICE_STATUSES:
+        st.session_state[VOICE_STATUS_KEY] = component_status
+    audio_base64 = str(getattr(response, "audio_base64", "") or "")
+    if audio_base64 and audio_base64 != st.session_state.get(LAST_AUDIO_KEY):
+        st.session_state[LAST_AUDIO_KEY] = audio_base64
+        _process_audio(audio_base64, context)
+        st.rerun()
     transcript = " ".join(str(getattr(response, "transcript", "") or "").split())[:500]
     if transcript and transcript != st.session_state.get(LAST_TRANSCRIPT_KEY):
         st.session_state[LAST_TRANSCRIPT_KEY] = transcript

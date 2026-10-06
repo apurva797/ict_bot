@@ -10,6 +10,10 @@ class AIProviderError(RuntimeError):
     """Expected provider/configuration failure safe to show to a user."""
 
 
+class AIProviderNetworkError(AIProviderError):
+    """Provider request could not reach or complete at the network boundary."""
+
+
 @dataclass(frozen=True)
 class ProviderResponse:
     raw_text: str
@@ -22,3 +26,7 @@ class AIProvider(ABC):
     @abstractmethod
     def generate(self, *, system_prompt: str, user_prompt: str) -> ProviderResponse:
         raise NotImplementedError
+
+    def health_check(self) -> tuple[bool, str]:
+        """Return provider reachability without exposing provider details."""
+        return False, "Health check is not supported."

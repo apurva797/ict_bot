@@ -161,6 +161,28 @@ class DemoSafetyTests(unittest.TestCase):
         self.assertIsNone(state["position"])
         self.assertEqual(len(state["trades"]), 1)
 
+    def test_duplicate_and_stale_candles_do_not_mutate_account(self):
+        frame = self.candles(40)
+        strategy = parse_strategy(EXAMPLES[0])
+        state = {"balance": 10_000.0, "position": None, "trades": [],
+                 "last_action": None}
+        advance_paper_account(frame, strategy, state,
+                              signal_sides=pd.Series("NEUTRAL", index=frame.index))
+        snapshot = dict(state)
+        self.assertIn("unchanged", advance_paper_account(
+            frame, strategy, state,
+            signal_sides=pd.Series("BUY", index=frame.index)).lower())
+        self.assertEqual(state["last_action"], snapshot["last_action"])
+        stale = frame.iloc[:-1].copy()
+        self.assertIn("unchanged", advance_paper_account(
+            stale, strategy, state,
+            signal_sides=pd.Series("BUY", index=stale.index)).lower())
+
+    def test_invalid_ohlcv_is_rejected_before_execution(self):
+        invalid = self.candles(40).drop(columns=["close"])
+        with self.assertRaises(ValueError):
+            advance_paper_account(invalid, parse_strategy(EXAMPLES[0]), {})
+
     def test_backtest_produces_metrics_equity_and_history(self):
         for example in EXAMPLES:
             metrics, equity, trades = run_backtest(self.candles(), parse_strategy(example))
@@ -177,4 +199,3 @@ class DemoSafetyTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

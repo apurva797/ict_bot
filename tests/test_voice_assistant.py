@@ -1,12 +1,13 @@
 """Focused tests for safe voice-assistant parsing and factual replies."""
 
 import unittest
+import base64
 from unittest.mock import patch
 
 import pandas as pd
 
 from ui.voice_assistant import (StrategyAwareVoiceContext, build_context,
-                                parse_intent, _reply)
+                                parse_intent, _reply, _process_audio)
 
 
 class VoiceAssistantTests(unittest.TestCase):
@@ -21,6 +22,34 @@ class VoiceAssistantTests(unittest.TestCase):
         self.assertEqual(parse_intent("Research Hub kholo").action, "research")
         self.assertEqual(parse_intent("set chart to 1h").action, "timeframe")
         self.assertEqual(parse_intent("run arbitrary python").action, "unknown")
+
+    def test_execution_language_is_hard_blocked(self):
+        intent = parse_intent("Bitcoin buy kar do")
+        self.assertEqual(intent.action, "execution_blocked")
+        with patch("ui.voice_assistant.st.session_state", {}):
+            reply = _reply(intent, "Trade")
+        self.assertIn("read-only", reply)
+        self.assertIn("cannot place orders", reply)
+
+    def test_missing_paper_context_is_explicit(self):
+        context = StrategyAwareVoiceContext(
+            "Quant", "BTC/USDT", "5m", "Trade",
+            visible_metrics={"paper_position": "FLAT", "paper_mark": 100.0},
+        )
+        with patch("ui.voice_assistant.st.session_state", {}):
+            reply = _reply(parse_intent("BTC ka current paper position kya hai"),
+                           "Trade", context)
+        self.assertIn("FLAT", reply)
+
+    def test_audio_processing_uses_server_side_provider(self):
+        context = StrategyAwareVoiceContext("Quant", "BTC/USDT", "5m", "Trade")
+        session = {}
+        with patch("ui.voice_assistant.st.session_state", session), \
+             patch("ui.voice_assistant.SarvamProvider.transcribe",
+                   return_value="BTC ka analysis batao"):
+            _process_audio(base64.b64encode(b"webm-audio").decode(), context)
+        self.assertEqual(session["voice_assistant_status"], "SUCCESS")
+        self.assertIn("BTC/USDT", session["voice_assistant_reply"])
 
     def test_market_reply_uses_loaded_snapshot_only(self):
         frame = pd.DataFrame({"close": [100.0, 102.0]})

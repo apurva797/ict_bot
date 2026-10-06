@@ -33,6 +33,11 @@ def render() -> None:
         try:
             with st.spinner("Preparing cited analysis..."):
                 analysis, router = analyze_with_ai(document)
+            st.session_state["research_copilot_analysis"] = {
+                "summary": analysis.summary,
+                "key_risks": list(analysis.key_risks),
+                "red_flags": list(analysis.red_flags),
+            }
             if router.status.development_mode:
                 st.warning(f"DEVELOPMENT MODE — {router.status.message}")
             else:

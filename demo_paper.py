@@ -11,16 +11,28 @@ from engine.risk import validate_trade
 def advance_paper_account(frame, strategy, state, signal_sides=None, journal_context=None, entry_levels=None):
     assert_demo_mode()
     validate_risk_controls(strategy.get("risk_fraction", 0.01), strategy.get("rr", 2), strategy.get("leverage", 1))
-    if frame is None or len(frame) < 35:
+    if (not isinstance(frame, pd.DataFrame)
+            or len(frame) < 35
+            or any(column not in frame.columns for column in ("open", "high", "low", "close"))):
+        raise ValueError("Valid OHLCV market data is required for paper trading.")
+    if frame[["open", "high", "low", "close"]].isna().any().any():
+        raise ValueError("Market data contains missing OHLCV values.")
+    if not frame.index.is_monotonic_increasing:
+        raise ValueError("Market data timestamps must be ordered.")
+    if len(frame) < 35:
         raise ValueError("Insufficient market data for paper trading.")
     state.setdefault("balance", 10_000.0)
     state.setdefault("position", None)
     state.setdefault("trades", [])
     state.setdefault("last_action", None)
     timestamp = frame.index[-1]
-    # Avoid duplicate fills if Streamlit reruns on the same finalized candle.
-    if state["last_action"] == str(timestamp):
-        return "No new candle yet; paper account unchanged."
+    # Avoid duplicate or stale fills when a provider repeats/reorders candles.
+    if state["last_action"] is not None:
+        try:
+            if pd.Timestamp(timestamp) <= pd.Timestamp(state["last_action"]):
+                return "No new candle yet; paper account unchanged."
+        except (TypeError, ValueError):
+            raise ValueError("Paper account has an invalid last-action timestamp.")
     close = float(frame.close.iloc[-1])
     state["last_mark"] = close
     msg = "No paper trade signal on the latest closed candle."
@@ -330,4 +342,3 @@ def advance_ict_paper_account(frame, state, news_blackout=False, journal_context
                    f"with {decision.actual_rr:.2f}R; no order was sent.")
     state["last_action"] = str(timestamp)
     return msg
-
