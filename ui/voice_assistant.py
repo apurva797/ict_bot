@@ -22,6 +22,7 @@ OPEN_KEY = "voice_assistant_open"
 LAST_TRANSCRIPT_KEY = "voice_assistant_last_transcript"
 ATTENTION_KEY = "voice_trade_attention_seen"
 LAST_ROUTE_KEY = "voice_last_route"
+COMPONENT_UPDATE_KEY = "voice_component_updated"
 
 _COMPONENTS_BY_RUNTIME: dict[int, object] = {}
 
@@ -272,6 +273,11 @@ def _component(language: str, speak_text: str,
         for key, value in (context.visible_metrics or {}).items()
         if isinstance(value, (int, float, str, type(None)))
     }
+    def on_transcript_change() -> None:
+        # Component state changes trigger this callback on the server rerun.
+        # The dialog then reads the returned transcript and processes it once.
+        st.session_state[COMPONENT_UPDATE_KEY] = True
+
     return component(
         key="voice_research_avatar_instance",
         data={"language": "hi-IN" if language == "hi" else "en-IN",
@@ -284,7 +290,8 @@ def _component(language: str, speak_text: str,
                   "visible_metrics": metrics,
               }},
         default={"transcript": "", "status": ""},
-        on_transcript_change=lambda: None, on_status_change=lambda: None,
+        on_transcript_change=on_transcript_change,
+        on_status_change=lambda: None,
         width="stretch", height=72,
     )
 

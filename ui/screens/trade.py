@@ -12,6 +12,7 @@ invents a signal, sizes a position, or approves a trade.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 import pandas as pd
 import streamlit as st
@@ -19,7 +20,7 @@ import streamlit as st
 from charting import render_ohlcv_chart
 from charting_overlays import build_ict_overlay, build_overlay_series
 from demo_data import MarketDataError
-from demo_paper import advance_ict_paper_account, monitor_paper_position
+from demo_paper import advance_ict_paper_account, advance_paper_account, monitor_paper_position
 from platform_core.errors import PlatformError
 from platform_core.ict import analyze_ict
 from platform_core.market_data import assess_health
@@ -125,6 +126,7 @@ def render(symbol: str, timeframe: str, starting_capital: float) -> str:
     st.session_state.setdefault("terminal_watchlist", symbol)
     ui.html_block(_terminal_header(symbol, timeframe))
     _paper_banner()
+    _render_live_session_controls(symbol, timeframe, starting_capital)
 
     # Reserve the chart before strategy actions run. The watchlist lives above
     # the chart instead of consuming a third desktop column, giving the
@@ -153,6 +155,125 @@ def render(symbol: str, timeframe: str, starting_capital: float) -> str:
 
     _render_bottom_terminal(symbol, timeframe)
     return strategy_choice
+
+
+def _render_live_session_controls(symbol: str, timeframe: str,
+                                  starting_capital: float) -> None:
+    """Run one non-blocking Streamlit fragment per refresh for paper trading."""
+    session = st.session_state.setdefault("live_paper_session", {
+        "active": False, "strategy": None, "symbol": None, "timeframe": None,
+        "started_at": None, "last_tick_at": None, "last_error": None,
+    })
+    with st.expander("Live paper engine", expanded=bool(session.get("active"))):
+        st.caption("Simulated only. Fresh provider data is required; bundled historical data cannot start a live session.")
+        columns = st.columns(3)
+        if not session.get("active"):
+            if columns[0].button("Start paper session", key="start_live_paper"):
+                session.update({
+                    "active": True, "strategy": st.session_state.get("strategy_choice", "Multi-Strategy Engine"),
+                    "symbol": symbol, "timeframe": timeframe,
+                    "started_at": datetime.now(timezone.utc).isoformat(),
+                    "last_error": None,
+                })
+                st.rerun()
+        else:
+            if columns[0].button("Stop paper session", key="stop_live_paper"):
+                session["active"] = False
+                session["last_error"] = None
+                st.rerun()
+        status = "PAPER ENGINE RUNNING" if session.get("active") else "PAPER ENGINE STOPPED"
+        st.write(status)
+        if session.get("last_error"):
+            st.error(f"ENGINE ERROR: {session['last_error']}")
+        if session.get("last_tick_at"):
+            columns[1].caption(f"Last tick: {session['last_tick_at']}")
+        columns[2].caption("No broker, order, or account endpoint is used.")
+
+    if session.get("active"):
+        _live_paper_fragment(symbol, timeframe, starting_capital)
+
+
+@st.fragment(run_every="5s")
+def _live_paper_fragment(symbol: str, timeframe: str,
+                          starting_capital: float) -> None:
+    """Refresh only this paper-engine region, keeping the rest of the UI responsive."""
+    _run_live_paper_tick(symbol, timeframe, starting_capital)
+    session = st.session_state.get("live_paper_session", {})
+    if session.get("last_source"):
+        health = "LIVE DATA" if session.get("data_health") == "LIVE" else "DEGRADED DATA"
+        st.caption(f"{health} · {session['last_source']}")
+    if session.get("last_message"):
+        st.info(session["last_message"])
+    strategy_key = (
+        strategies.ARJUN_KEY if session.get("strategy") == "ARJUNA Strategy"
+        else "quant.trend" if session.get("strategy") == "Quant Strategy"
+        else "multi.strategy"
+    )
+    account = state.account_for(strategy_key, symbol, timeframe)
+    if account:
+        render_account_state(account, "Live paper")
+
+
+def _run_live_paper_tick(symbol: str, timeframe: str,
+                         starting_capital: float) -> None:
+    """Fetch fresh candles and advance the selected existing strategy engine."""
+    try:
+        result = marketdata.load(symbol, timeframe, marketdata.ANALYSIS_CANDLES)
+        if not result.ok or result.frame is None:
+            raise MarketDataError(result.error or "Market data unavailable.")
+        if str(result.source).startswith("Bundled"):
+            raise MarketDataError(
+                f"Live paper session stopped: provider unavailable ({result.source}).")
+        session = st.session_state["live_paper_session"]
+        choice = session["strategy"]
+        if choice == "ARJUNA Strategy":
+            account = state.get_paper_account(strategies.ARJUN_KEY, starting_capital, symbol, timeframe)
+            message = advance_ict_paper_account(result.frame, account,
+                                                journal_context={"market": symbol, "timeframe": timeframe,
+                                                                 "data_source": result.source})
+            account["data_health"] = "LIVE" if not result.used_fallback else "DEGRADED"
+        else:
+            plugin_id = "quant.trend" if choice == "Quant Strategy" else "multi.strategy"
+            account = state.get_paper_account(plugin_id, starting_capital, symbol, timeframe)
+            if choice == "Quant Strategy":
+                from platform_strategies import strategy_registry
+                params = {"fast": 20, "slow": 50} if plugin_id == "quant.trend" else {}
+                signals = strategy_registry.get(plugin_id).signal_series(result.frame, params)
+                message = advance_paper_account(
+                    result.frame, {"side": "BUY", "entry": [], "exit": [],
+                                   "risk_fraction": .01, "rr": 2., "leverage": 1.},
+                    account, signal_sides=signals,
+                    journal_context={"strategy_id": plugin_id, "market": symbol,
+                                     "timeframe": timeframe, "data_source": result.source})
+            else:
+                from bot import analyze_multi_strategy_candles
+                candles = [[int(ts.value // 1_000_000), float(row.open), float(row.high),
+                             float(row.low), float(row.close), float(row.volume)]
+                            for ts, row in result.frame.iterrows()]
+                analysis = analyze_multi_strategy_candles(candles)
+                final = analysis.get("final_signal") or {}
+                side = final.get("side")
+                signal = "BUY" if side == "LONG" and final.get("confirmation_passed") else (
+                    "SELL" if side == "SHORT" and final.get("confirmation_passed") else "NEUTRAL")
+                signals = pd.Series("NEUTRAL", index=result.frame.index, dtype="object")
+                signals.iloc[-1] = signal
+                message = advance_paper_account(
+                    result.frame, {"side": "BUY", "entry": [], "exit": [],
+                                   "risk_fraction": .01, "rr": 2., "leverage": 1.},
+                    account, signal_sides=signals,
+                    journal_context={"strategy_id": plugin_id, "market": symbol,
+                                     "timeframe": timeframe, "data_source": result.source})
+            account["data_health"] = "LIVE" if not result.used_fallback else "DEGRADED"
+        session["data_health"] = "LIVE" if not result.used_fallback else "DEGRADED"
+        session["last_tick_at"] = datetime.now(timezone.utc).isoformat()
+        session["last_error"] = None
+        session["last_message"] = message
+        session["last_source"] = result.source
+    except (MarketDataError, ValueError, TypeError, KeyError) as exc:
+        failed_session = st.session_state["live_paper_session"]
+        failed_session["last_error"] = str(exc)
+        failed_session["active"] = False
+        return
 
 
 def _terminal_header(symbol: str, timeframe: str) -> str:
@@ -308,9 +429,11 @@ def _paper_banner() -> None:
     belongs directly above them instead of only on the Home screen where the
     account is summarised.
     """
+    running = bool((st.session_state.get("live_paper_session") or {}).get("active"))
+    engine_label = "PAPER TRADING · ENGINE RUNNING" if running else "PAPER TRADING · ENGINE STOPPED"
     ui.html_block(ui.card(
         '<div class="ui-row">'
-        f'<div>{ui.status_pill("PAPER TRADING", "warning", live=True)}</div>'
+        f'<div>{ui.status_pill(engine_label, "profit" if running else "warning", live=running)}</div>'
         f'<div>{ui.pill("Live orders disabled", "loss")}</div>'
         "</div>"
         '<div class="ui-sub" style="margin-top:.5rem">'
@@ -436,7 +559,7 @@ def _render_arjun(symbol: str, timeframe: str, starting_capital: float) -> None:
         ui.card(
             f'<div class="ui-label">Status</div>'
             f'<div style="margin-top:.35rem">'
-            f'{ui.status_pill("Paper Trading Active", "profit", live=True)}</div>'
+            f'{ui.status_pill("Paper Engine Running" if (st.session_state.get("live_paper_session") or {}).get("active") else "Paper Engine Stopped", "profit" if (st.session_state.get("live_paper_session") or {}).get("active") else "warning", live=bool((st.session_state.get("live_paper_session") or {}).get("active")))}</div>'
             '<div class="ui-sub" style="margin-top:.4rem">'
             "Evaluated 24/7. Risk limits and cooldown always apply.</div>",
         ),
@@ -638,14 +761,21 @@ def render_account_state(account: dict, label: str) -> None:
     """Balance, open position, and journal for one paper account."""
     balance = float(account.get("balance", 0.0) or 0.0)
     trades = list(account.get("trades", []))
+    position = account.get("position")
+    mark = account.get("live_price", account.get("last_mark"))
+    unrealized = None
+    if position and mark is not None:
+        direction = 1 if position.get("side") == "LONG" else -1
+        unrealized = (float(mark) - float(position["entry"])) * float(position["quantity"]) * direction
     ui.html_block(ui.grid(3,
         ui.card(ui.stat("Paper balance", ui.money(balance, signed=False),
                         f"{label} · simulation")),
-        ui.card(ui.stat("Open position", "Yes" if account.get("position") else "No",
+        ui.card(ui.stat("Open position", "Yes" if position else "No",
                         "Paper engine state")),
         ui.card(ui.stat("Closed trades", ui.esc(str(len(trades))), "In this session")),
     ))
-    position = account.get("position")
+    if position:
+        st.caption(f"Unrealized P&L: {ui.money(unrealized or 0.0)} · Mark: {float(mark):,.4f}")
     if position:
         pairs = [
             ("Side", ui.esc(str(position.get("side", "--")))),
