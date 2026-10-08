@@ -67,8 +67,11 @@ def render_routed_app() -> None:
     # degrades to the buttons rendered below, never to a missing feature.
     commands.mount_accelerator()
     topbar.render(SETTINGS)
-    voice_assistant.render_avatar(navigation.current_route())
-    commands.render_palette_launcher()
+    voice_slot, search_slot = st.columns([0.85, 2.6], gap="small")
+    with voice_slot:
+        voice_assistant.render_avatar(navigation.current_route())
+    with search_slot:
+        commands.render_palette_launcher()
     with st.sidebar:
         st.markdown("**Workspace**")
         sidebar_market = st.selectbox(

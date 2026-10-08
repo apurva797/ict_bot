@@ -25,11 +25,16 @@ def render() -> None:
     unrealized = float(snapshot.get("unrealized_pnl", 0.0) or 0.0)
     realized = float(snapshot.get("realized_pnl", 0.0) or 0.0)
     total_pnl = realized + unrealized
+    has_account = bool(state.all_accounts())
+    equity_value = ui.money(snapshot.get("equity"), signed=False) if has_account else "--"
+    balance_value = ui.money(snapshot.get("balance"), signed=False) if has_account else "--"
+    total_value = (f'<span class="{ui.tone_class(total_pnl)}">{ui.money(total_pnl)}</span>'
+                   if has_account else '<span class="ui-flat">--</span>')
 
     ui.html_block(ui.grid(4,
-        ui.card(ui.stat("Equity", ui.money(snapshot.get("equity"), signed=False),
+        ui.card(ui.stat("Equity", equity_value,
                         "Paper account", size="lg"), variant="accent"),
-        ui.card(ui.stat("Available balance", ui.money(snapshot.get("balance"), signed=False),
+        ui.card(ui.stat("Available balance", balance_value,
                         "Cash", size="lg")),
         ui.card(ui.stat(
             "Today's P&L",
@@ -40,9 +45,11 @@ def render() -> None:
             else "loss" if (today_pnl or 0) < 0 else ""),
         ui.card(ui.stat(
             "Total P&L",
-            f'<span class="{ui.tone_class(total_pnl)}">{ui.money(total_pnl)}</span>',
-            f"Realized {ui.money(realized)} · Unrealized {ui.money(unrealized)}", size="lg"),
-            variant="profit" if total_pnl > 0 else "loss" if total_pnl < 0 else ""),
+            total_value,
+            (f"Realized {ui.money(realized)} · Unrealized {ui.money(unrealized)}"
+             if has_account else "No paper account yet"), size="lg"),
+            variant="profit" if has_account and total_pnl > 0
+            else "loss" if has_account and total_pnl < 0 else ""),
     ))
 
     ui.html_block(ui.section_head("Equity curve", "Realized paper equity over time"))

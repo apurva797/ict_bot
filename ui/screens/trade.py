@@ -174,7 +174,18 @@ def _render_live_session_controls(symbol: str, timeframe: str,
                     "symbol": symbol, "timeframe": timeframe,
                     "started_at": datetime.now(timezone.utc).isoformat(),
                     "last_error": None,
+                    "defer_first_tick": True,
                 })
+                probe = marketdata.load(symbol, timeframe, marketdata.ANALYSIS_CANDLES)
+                if not probe.ok or str(probe.source).startswith("Bundled"):
+                    session["active"] = False
+                    session["last_error"] = (
+                        probe.error or f"Live paper session stopped: provider unavailable ({probe.source}).")
+                else:
+                    session["data_health"] = "LIVE" if not probe.used_fallback else "DEGRADED"
+                    session["last_source"] = probe.source
+                    session["last_tick_at"] = datetime.now(timezone.utc).isoformat()
+                    session["last_message"] = "Paper engine ready; first strategy tick will run on the next refresh."
                 st.rerun()
         else:
             if columns[0].button("Stop paper session", key="stop_live_paper"):
@@ -197,6 +208,10 @@ def _render_live_session_controls(symbol: str, timeframe: str,
 def _live_paper_fragment(symbol: str, timeframe: str,
                           starting_capital: float) -> None:
     """Refresh only this paper-engine region, keeping the rest of the UI responsive."""
+    session = st.session_state.get("live_paper_session", {})
+    if session.pop("defer_first_tick", False):
+        st.info("Paper engine ready; first strategy tick will run on the next refresh.")
+        return
     _run_live_paper_tick(symbol, timeframe, starting_capital)
     session = st.session_state.get("live_paper_session", {})
     if session.get("last_source"):

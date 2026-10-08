@@ -363,6 +363,12 @@ div[data-testid="stMetricValue"], .ui-table td, .ui-table th,
   .ui-shell-topbar { grid-template-columns: minmax(0, 1fr); }
   .ui-shell-center, .ui-shell-actions { justify-content: flex-start; }
 }
+@media (max-width: 520px) {
+  .ui-shell-center .ui-pill:nth-child(n + 3) { display: none; }
+  .ui-shell-name { font-size: .88rem; }
+  .ui-shell-tagline { font-size: .52rem; letter-spacing: .1em; }
+  .ui-shell-topbar { gap: .35rem; padding-bottom: .55rem; margin-bottom: .55rem; }
+}
 
 /* ---------- Command palette / shortcuts dialog ---------- */
 [data-testid="stDialog"] {
