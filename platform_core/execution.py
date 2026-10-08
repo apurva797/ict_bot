@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import itertools
 import logging
+import math
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Any
 
 import pandas as pd
@@ -95,8 +96,15 @@ class PaperExecutionEngine:
                daily_r: float = 0.0) -> tuple:
         """Run the risk engine, then create a paper order."""
         assert_demo_mode()
+        execution_signal = signal
+        if fill_price is not None:
+            fill_price = float(fill_price)
+            if not math.isfinite(fill_price) or fill_price <= 0:
+                raise PlatformError("A paper fill requires a finite positive price.",
+                                    Status.DATA_UNAVAILABLE)
+            execution_signal = replace(signal, entry=fill_price)
         decision = self.risk_engine.validate(
-            signal, account,
+            execution_signal, account,
             data_health=data_health if data_health is not None else DataHealth.CONNECTED,
             open_positions=open_positions, cooldown_active=cooldown_active,
             daily_trades=daily_trades, daily_r=daily_r,
@@ -109,14 +117,14 @@ class PaperExecutionEngine:
             order_id=_new_order_id(),
             user_id=self.user_id,
             portfolio_id=self.portfolio_id,
-            strategy_id=signal.strategy_id,
-            symbol=signal.symbol,
-            timeframe=signal.timeframe,
-            side=signal.direction,
+            strategy_id=execution_signal.strategy_id,
+            symbol=execution_signal.symbol,
+            timeframe=execution_signal.timeframe,
+            side=execution_signal.direction,
             quantity=decision.quantity,
-            entry=float(signal.entry),
-            stop_loss=float(signal.stop_loss),
-            take_profit=float(signal.take_profit),
+            entry=float(execution_signal.entry),
+            stop_loss=float(execution_signal.stop_loss),
+            take_profit=float(execution_signal.take_profit),
             risk_amount=decision.risk_amount,
             filled_at=pd.Timestamp.now(tz="UTC") if fill_price is not None else None,
             risk_decision=decision.to_dict(),
@@ -130,13 +138,19 @@ class PaperExecutionEngine:
         if order.status != "FILLED":
             raise PlatformError("Only a filled order can open a paper position.",
                                 Status.RISK_REJECTED)
+        if order.position_id is not None:
+            raise PlatformError("This paper order already has an open position.",
+                                Status.RISK_REJECTED)
         order.position_id = _new_position_id()
         return order
 
     def close_position(self, order: PaperOrder, exit_price: float, reason: str,
                        timestamp: pd.Timestamp | None = None) -> PaperOrder:
         """Close a filled order and book fees and realized P&L from real prices."""
-        if exit_price is None or exit_price <= 0:
+        if order.status != "FILLED" or order.position_id is None:
+            raise PlatformError("Only an open paper position can be closed.",
+                                Status.RISK_REJECTED)
+        if exit_price is None or not math.isfinite(float(exit_price)) or exit_price <= 0:
             raise PlatformError("A valid exit price is required to close a paper position.",
                                 Status.DATA_UNAVAILABLE)
         timestamp = timestamp or pd.Timestamp.now(tz="UTC")

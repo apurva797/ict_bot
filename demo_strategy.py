@@ -107,7 +107,9 @@ def validate_strategy(obj) -> StrategySpecification:
                 item["compare_to"] = compare
             else:
                 value = raw.get("value")
-                if not isinstance(value, (float, int)) or isinstance(value, bool) or not -1_000_000 <= value <= 1_000_000:
+                if (not isinstance(value, (float, int)) or isinstance(value, bool)
+                    or not math.isfinite(value)
+                    or not -1_000_000 <= value <= 1_000_000):
                     raise StrategyError("Each condition needs a finite numeric value.")
                 item["value"] = float(value)
             normalized[key].append(item)

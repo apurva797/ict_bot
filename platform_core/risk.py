@@ -8,6 +8,7 @@ passing :meth:`RiskEngine.validate`, and sizing is deterministic.
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -95,6 +96,10 @@ class RiskEngine:
         target = float(signal.take_profit)
         balance = float(account.get("balance", 0.0))
 
+        if not all(math.isfinite(value) for value in (entry, stop, target, balance)):
+            return RiskDecision(False, Status.RISK_REJECTED,
+                                "Prices and account balance must be finite numbers.",
+                                checks=checks)
         if entry <= 0 or stop <= 0 or target <= 0:
             return RiskDecision(False, Status.RISK_REJECTED,
                                 "Entry, stop loss, and take profit must all be positive prices.",
@@ -121,6 +126,9 @@ class RiskEngine:
                                 f"{config.min_rr:.2f}R.", actual_rr=actual_rr, checks=checks)
 
         requested_risk = float(signal.metadata.get("risk_fraction", config.risk_per_trade))
+        if not math.isfinite(requested_risk):
+            return RiskDecision(False, Status.RISK_REJECTED,
+                                "Risk per trade must be a finite number.", checks=checks)
         # A strategy asking for more risk than allowed is rejected, never clamped.
         risk_fraction = requested_risk
         if risk_fraction > config.risk_per_trade or risk_fraction <= 0:
@@ -131,6 +139,9 @@ class RiskEngine:
         checks["risk_fraction"] = risk_fraction
 
         leverage = float(signal.metadata.get("leverage", 1.0))
+        if not math.isfinite(leverage):
+            return RiskDecision(False, Status.RISK_REJECTED,
+                                "Leverage must be a finite number.", checks=checks)
         if leverage > config.max_leverage or leverage <= 0:
             return RiskDecision(False, Status.RISK_REJECTED,
                                 f"Leverage must stay at or below {config.max_leverage:g}x.",

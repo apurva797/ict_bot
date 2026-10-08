@@ -5,7 +5,7 @@ import numpy as np
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
-from demo_strategy import evaluate_conditions, interpret_strategy
+from demo_strategy import StrategyError, evaluate_conditions, interpret_strategy
 from voice_strategy import apply_voice_transcript
 
 from conftest import click, go_to, open_app, open_trade, pick_strategy, strategy_radio
@@ -85,6 +85,16 @@ class NaturalLanguageStrategyTests(unittest.TestCase):
                 result = interpret_strategy(f"RSI 30 ke neeche buy target {rr}R")
                 self.assertIsNone(result.specification)
                 self.assertIn("below 1.5R", result.validation_message)
+
+    def test_non_finite_condition_values_are_rejected(self):
+        with self.assertRaisesRegex(StrategyError, "finite numeric value"):
+            from demo_strategy import validate_strategy
+            validate_strategy({
+                "side": "BUY",
+                "entry": [{"indicator": "RSI", "operator": ">", "period": 14,
+                           "value": float("nan")}],
+                "exit": [],
+            })
 
     def test_macd_zero_line_is_a_deterministic_supported_condition(self):
         result = interpret_strategy("Buy when MACD crosses above zero")

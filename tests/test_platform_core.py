@@ -243,6 +243,35 @@ class PaperExecutionTests(unittest.TestCase):
         self.assertGreater(order.fees, 0)
         self.assertEqual(len(self.engine.orders), 1)
 
+    def test_actual_fill_price_is_used_for_pnl_and_fees(self):
+        order, decision = self.engine.submit(long_signal(), self.account, fill_price=99.5)
+        self.assertTrue(decision.approved)
+        self.assertEqual(order.entry, 99.5)
+        self.engine.open_position(order)
+        self.engine.close_position(order, 101.5, "TAKE_PROFIT", self.timestamp)
+        self.assertAlmostEqual(
+            order.realized_pnl,
+            (101.5 - 99.5) * order.quantity - order.fees,
+            places=8,
+        )
+
+    def test_position_lifecycle_rejects_duplicate_open_and_close(self):
+        order, _ = self.engine.submit(long_signal(), self.account, fill_price=100.0)
+        self.engine.open_position(order)
+        with self.assertRaises(PlatformError):
+            self.engine.open_position(order)
+        self.engine.close_position(order, 102.0, "TAKE_PROFIT", self.timestamp)
+        with self.assertRaises(PlatformError):
+            self.engine.close_position(order, 102.0, "DUPLICATE", self.timestamp)
+
+    def test_non_finite_inputs_are_rejected(self):
+        with self.assertRaises(PlatformError):
+            self.engine.submit(long_signal(), self.account, fill_price=float("nan"))
+        self.assertFalse(self.engine.risk_engine.validate(
+            with_metadata(long_signal(), risk_fraction=float("nan")), self.account).approved)
+        self.assertFalse(self.engine.risk_engine.validate(
+            with_metadata(long_signal(), leverage=float("inf")), self.account).approved)
+
     def test_risk_rejection_creates_no_order(self):
         order, decision = self.engine.submit(long_signal(take_profit=100.5), self.account)
         self.assertIsNone(order)
