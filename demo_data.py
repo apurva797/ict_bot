@@ -21,7 +21,9 @@ COINBASE_PRODUCT_IDS = {
     "SOL/USDT": "SOL-USDT",
 }
 SAMPLE_DATA_DIR = Path(__file__).resolve().parent / "sample_data"
-MAX_HISTORICAL_CANDLES = 1000
+MAX_HISTORICAL_CANDLES = 50_000
+HISTORICAL_CACHE_DIR = SAMPLE_DATA_DIR / "cache"
+
 
 
 def __getattr__(name):
@@ -351,6 +353,23 @@ def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
             raise MarketDataError("The uploaded CSV has fewer than 100 valid candles in the selected date range.")
         return MarketDataResult(frame=frame, source="Uploaded OHLCV CSV", used_fallback=False)
 
+    cache_file = None
+    try:
+        HISTORICAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+        clean_sym = symbol.replace("/", "_").replace("-", "_")
+        cache_file = HISTORICAL_CACHE_DIR / f"{clean_sym}_{timeframe}_{start_ts.strftime('%Y%m%d')}_{end_ts.strftime('%Y%m%d')}.csv"
+        for existing in sorted(HISTORICAL_CACHE_DIR.glob(f"{clean_sym}_{timeframe}_*.csv"), reverse=True):
+            try:
+                cached_frame = load_uploaded_ohlcv(existing)
+                if cached_frame.index[0] <= start_ts + pd.Timedelta(hours=3) and cached_frame.index[-1] >= end_ts - pd.Timedelta(hours=3):
+                    sub = cached_frame.loc[(cached_frame.index >= start_ts) & (cached_frame.index < end_ts)]
+                    if len(sub) >= 100:
+                        return MarketDataResult(frame=sub, source=f"Cached historical OHLCV ({existing.name})", used_fallback=False)
+            except Exception:
+                continue
+    except Exception as exc:
+        LOGGER.debug("Historical cache lookup failed: %s", exc)
+
     finalized_end_ms = min(end_ms, int(time.time() * 1000))
     providers = (
         ("Binance public historical OHLCV", lambda: _historical_binance(symbol, timeframe, start_ms, finalized_end_ms, max_candles)),
@@ -363,6 +382,13 @@ def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
             frame = frame.loc[(frame.index >= start_ts) & (frame.index < end_ts)]
             if len(frame) < 100:
                 raise MarketDataError("Provider returned fewer than 100 historical candles in range.")
+            if cache_file is not None and index == 0:
+                try:
+                    out = frame.reset_index()
+                    out.rename(columns={"index": "timestamp", "time": "timestamp"}, inplace=True)
+                    out.to_csv(cache_file, index=False)
+                except Exception as save_exc:
+                    LOGGER.debug("Historical cache save failed: %s", save_exc)
             return MarketDataResult(frame=frame, source=name, used_fallback=index > 0)
         except Exception as exc:
             failures.append(f"{name}: {type(exc).__name__}")

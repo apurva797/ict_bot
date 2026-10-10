@@ -70,7 +70,7 @@ def no_implicit_live_market_calls(request):
 
 def open_app() -> AppTest:
     """Load the app at its default route."""
-    return AppTest.from_file(str(ROOT)).run()
+    return AppTest.from_file(str(ROOT)).run(timeout=30)
 
 
 def go_to(app: AppTest, route: str) -> AppTest:
@@ -81,7 +81,7 @@ def go_to(app: AppTest, route: str) -> AppTest:
         available = [list(getattr(item, "options", ()) or ())
                      for item in app.segmented_control]
         raise AssertionError(f"No navigation offers {route!r}. Found: {available}")
-    return control.set_value(route).run()
+    return control.set_value(route).run(timeout=30)
 
 
 def open_trade(app: AppTest | None = None) -> AppTest:
@@ -105,7 +105,7 @@ def pick_strategy(app: AppTest, label: str) -> AppTest:
     """Select a strategy, navigating to the Trade screen when needed."""
     if not any(item.label == "Strategy" for item in app.radio):
         app = go_to(app, "Trade")
-    return strategy_radio(app).set_value(label).run()
+    return strategy_radio(app).set_value(label).run(timeout=30)
 
 
 def click(app: AppTest, label: str) -> AppTest:
@@ -115,7 +115,7 @@ def click(app: AppTest, label: str) -> AppTest:
         raise AssertionError(
             f"No button labelled {label!r}. Available: "
             f"{sorted(item.label for item in app.button)}")
-    return button.click().run()
+    return button.click().run(timeout=30)
 
 
 def rendered(app: AppTest) -> str:

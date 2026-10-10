@@ -11,6 +11,7 @@ from demo_data import MarketDataError, _validate_ohlcv_frame
 from demo_safety import assert_demo_mode, validate_risk_controls
 from engine.risk import calculate_atr_levels, calculate_position_size, calculate_atr, validate_trade
 from config import ATR_PERIOD, ATR_SL_MULTIPLIER, MAX_DAILY_LOSS_R, MAX_TRADES_PER_DAY, MIN_RR, DEFAULT_RR
+from engine.daily_returns import compute_daily_returns_table
 
 WARMUP_CANDLES = 100
 DEFAULT_FEE_RATE = 0.0004
@@ -96,6 +97,11 @@ def run_multi_strategy_backtest(
         timestamp = frame.index[fill_index]
         signal_side = final.get("side")
         confirmed = bool(final.get("confirmation_passed", False))
+        if len(selected) == 1 and not confirmed:
+            single_sig = evaluation.get("signals", {}).get(selected[0], {})
+            if single_sig.get("side") in {"LONG", "SHORT"} and float(single_sig.get("score", 0)) >= 50:
+                signal_side = single_sig["side"]
+                confirmed = True
         active_key = "active_long" if signal_side == "LONG" else "active_short"
         contributors = list(final.get(active_key, []))
         if not contributors:
@@ -204,9 +210,20 @@ def run_multi_strategy_backtest(
         columns=["equity", "drawdown_pct"], index=pd.DatetimeIndex([], name="time"))
     metrics = _metrics(float(starting_capital), balance, trades_frame, blocked, max_drawdown)
     metrics["Exposure %"] = _exposure_percent(trades_frame, frame.index[0], frame.index[-1])
+    daily_df, monthly_df, daily_metrics = compute_daily_returns_table(
+        equity_curve=equity_frame,
+        trades=trades_frame,
+        starting_capital=float(starting_capital),
+        start_date=frame.index[0],
+        end_date=frame.index[-1],
+    )
+    for k, v in daily_metrics.items():
+        if k not in metrics:
+            metrics[k] = v
     breakdown = _strategy_breakdown(strategy_stats, float(starting_capital))
     return {
         "metrics": metrics, "trades": trades_frame, "equity": equity_frame,
+        "daily_table": daily_df, "monthly_table": monthly_df,
         "strategy_breakdown": breakdown, "blocked_signals": pd.DataFrame(blocked),
         "source": None, "symbol": symbol, "timeframe": timeframe,
         "start": frame.index[0], "end": frame.index[-1], "selection": selected,

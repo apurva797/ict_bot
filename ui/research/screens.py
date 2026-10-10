@@ -1,4 +1,4 @@
-﻿"""Research workspace.
+"""Research workspace.
 
 Deliberately separated from the trading interface. Nothing here can open,
 modify, or close a position: research reads historical candles and the
@@ -116,14 +116,15 @@ def _arjun_signals(frame) -> "pd.Series":
     from demo_safety import ict_entry_gate
     from strategies.ict import ict_signal
 
+    all_candles = [[int(ts.timestamp() * 1000), float(row.open), float(row.high),
+                   float(row.low), float(row.close), float(row.volume)]
+                  for ts, row in frame.iterrows()]
     sides: list = []
     for index, stamp in enumerate(frame.index):
         if index < 99 or not ict_entry_gate(stamp)[0]:
             sides.append(None)
             continue
-        prefix = [[int(ts.timestamp() * 1000), float(row.open), float(row.high),
-                   float(row.low), float(row.close), float(row.volume)]
-                  for ts, row in frame.iloc[:index + 1].iterrows()]
+        prefix = all_candles[:index + 1]
         outcome = ict_signal(prefix)
         side = outcome.get("side") if isinstance(outcome, dict) else None
         sides.append("BUY" if side == "LONG" else "SELL" if side == "SHORT" else None)

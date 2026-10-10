@@ -165,11 +165,12 @@ class IctStrategyPlugin:
         from strategies.ict import ict_signal
 
         signals = pd.Series(None, index=frame.index, dtype="object")
+        all_candles = [
+            [int(ts.timestamp() * 1000), float(row.open), float(row.high), float(row.low), float(row.close), float(row.volume)]
+            for ts, row in frame.iterrows()
+        ]
         for end in range(self.metadata.min_candles, len(frame) + 1):
-            candles = [
-                [int(ts.timestamp() * 1000), float(row.open), float(row.high), float(row.low), float(row.close), float(row.volume)]
-                for ts, row in frame.iloc[:end].iterrows()
-            ]
+            candles = all_candles[:end]
             result = ict_signal(candles)
             side = result.get("side") if isinstance(result, dict) else None
             if side in {"LONG", "SHORT"}:
@@ -235,12 +236,13 @@ class CandleSignalPlugin:
         signal_fn = self._load()
         signals = pd.Series(None, index=frame.index, dtype="object")
         min_c = self.metadata.min_candles
+        all_candles = [
+            [int(ts.timestamp() * 1000), float(row.open), float(row.high),
+             float(row.low), float(row.close), float(row.volume)]
+            for ts, row in frame.iterrows()
+        ]
         for end in range(min_c, len(frame) + 1):
-            candles = [
-                [int(ts.timestamp() * 1000), float(row.open), float(row.high),
-                 float(row.low), float(row.close), float(row.volume)]
-                for ts, row in frame.iloc[:end].iterrows()
-            ]
+            candles = all_candles[:end]
             result = signal_fn(candles)
             side = result.get("side") if isinstance(result, dict) else None
             if side in {"LONG", "SHORT"}:

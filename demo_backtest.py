@@ -184,13 +184,14 @@ def run_ict_backtest(frame, starting_capital=10_000.0, news_blackout=False):
 
     if frame is None or len(frame) < 100:
         raise ValueError("Insufficient market data for the ARJUNA strategy.")
+    all_candles = [[int(ts.timestamp() * 1000), float(c.open), float(c.high), float(c.low), float(c.close), float(c.volume)]
+                   for ts, c in frame.iterrows()]
     sides = []
     for i, (timestamp, row) in enumerate(frame.iterrows()):
         if i < 99 or not ict_entry_gate(timestamp, news_blackout=news_blackout)[0]:
             sides.append(None)
             continue
-        candles = [[int(ts.timestamp() * 1000), float(c.open), float(c.high), float(c.low), float(c.close), float(c.volume)]
-                   for ts, c in frame.iloc[:i + 1].iterrows()]
+        candles = all_candles[:i + 1]
         result = ict_signal(candles)
         side = result.get("side") if isinstance(result, dict) else None
         sides.append("BUY" if side == "LONG" else "SELL" if side == "SHORT" else None)
