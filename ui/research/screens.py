@@ -25,7 +25,7 @@ from ui.research import core
 
 LOGGER = logging.getLogger("ui.research.screens")
 
-TABS = ("AI Copilot", "Backtest", "Multi-Strategy", "Optimization", "Walk Forward", "Monte Carlo",
+TABS = ("AI Copilot", "Backtest", "One-Year Backtest", "Multi-Strategy", "Optimization", "Walk Forward", "Monte Carlo",
         "Robustness", "Trade Journal", "Learnings")
 
 
@@ -42,9 +42,10 @@ def render() -> None:
     st.markdown("")
     from ui.research.multi_strategy import render as render_multi_strategy
     from ui.research.copilot import render as render_copilot
+    from ui.research.year_backtest_screen import render_year_backtest_screen
 
-    renderers = (render_copilot, _backtest, render_multi_strategy, _optimization, _walk_forward,
-                 _monte_carlo, _robustness, _journal, _learnings)
+    renderers = (render_copilot, _backtest, render_year_backtest_screen, render_multi_strategy,
+                 _optimization, _walk_forward, _monte_carlo, _robustness, _journal, _learnings)
     for panel, renderer in zip(st.tabs(list(TABS)), renderers):
         with panel:
             renderer()
