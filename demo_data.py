@@ -359,10 +359,10 @@ def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
         for existing in sorted(HISTORICAL_CACHE_DIR.glob(f"{clean_sym}_{timeframe}_*.csv"), reverse=True):
             try:
                 cached_frame = load_uploaded_ohlcv(existing)
-                if cached_frame.index[0] <= start_ts + pd.Timedelta(hours=3) and cached_frame.index[-1] >= end_ts - pd.Timedelta(hours=3):
-                    sub = cached_frame.loc[(cached_frame.index >= start_ts) & (cached_frame.index < end_ts)]
-                    if len(sub) >= 100:
-                        return MarketDataResult(frame=sub, source=f"Cached historical OHLCV ({existing.name})", used_fallback=False)
+                sub = cached_frame.loc[(cached_frame.index >= start_ts) & (cached_frame.index < end_ts)]
+                expected_index = pd.date_range(start=start_ts, periods=expected, freq=pd.Timedelta(milliseconds=interval_ms))
+                if sub.index.equals(expected_index):
+                    return MarketDataResult(frame=sub, source=f"Cached historical OHLCV ({existing.name})", used_fallback=False)
             except Exception:
                 continue
     except Exception as exc:
@@ -374,23 +374,36 @@ def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
         ("Coinbase Exchange public historical OHLCV", lambda: _historical_coinbase(symbol, timeframe, start_ms, finalized_end_ms)),
     )
     failures = []
-    for index, (name, provider) in enumerate(providers):
+    frames = []
+    expected_index = pd.date_range(start=start_ts, periods=expected, freq=pd.Timedelta(milliseconds=interval_ms))
+
+    for name, provider in providers:
         try:
             frame = provider()
             frame = frame.loc[(frame.index >= start_ts) & (frame.index < end_ts)]
-            if len(frame) < 100:
-                raise MarketDataError("Provider returned fewer than 100 historical candles in range.")
-            if cache_file is not None and index == 0:
-                try:
-                    out = frame.reset_index()
-                    out.rename(columns={"index": "timestamp", "time": "timestamp"}, inplace=True)
-                    out.to_csv(cache_file, index=False)
-                except Exception as save_exc:
-                    LOGGER.debug("Historical cache save failed: %s", save_exc)
-            return MarketDataResult(frame=frame, source=name, used_fallback=index > 0)
+            if not frame.empty:
+                frames.append(frame)
         except Exception as exc:
             failures.append(f"{name}: {type(exc).__name__}")
             LOGGER.warning("Historical source %s failed: %s", name, type(exc).__name__)
+
+    if frames:
+        combined = pd.concat(frames)
+        combined = combined.loc[~combined.index.duplicated(keep="first")].sort_index()
+        combined = combined.reindex(expected_index)
+        required_columns = ["open", "high", "low", "close", "volume"]
+        if all(column in combined.columns for column in required_columns) and not combined[required_columns].isna().any().any():
+            frame = combined
+            if cache_file is not None:
+                try:
+                    frame.reset_index().rename(columns={"index": "time"}).to_csv(cache_file, index=False)
+                except Exception as save_exc:
+                    LOGGER.debug("Historical cache save failed: %s", save_exc)
+            source_name = "Binance public historical OHLCV" if frames and frames[0].index.equals(expected_index) else "Merged Binance + Coinbase historical OHLCV"
+            return MarketDataResult(frame=frame, source=source_name, used_fallback=False)
+
+        missing_count = int(combined[required_columns].isna().any(axis=1).sum()) if all(column in combined.columns for column in required_columns) else expected
+        failures.append(f"Merged historical sources still have {missing_count} missing candles")
 
     try:
         sample = _load_sample_ohlcv(symbol, timeframe, min(max_candles, 1000))

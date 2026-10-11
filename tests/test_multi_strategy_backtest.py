@@ -1,4 +1,4 @@
-import io
+﻿import io
 import unittest
 from unittest.mock import Mock, patch
 
@@ -145,10 +145,14 @@ class HistoricalBacktestTests(unittest.TestCase):
             rows.append([ts, 100, 101, 99, 100, 25])
         exchange = Mock()
         exchange.fetch_ohlcv.return_value = rows
-        with patch("demo_data.ccxt.binance", return_value=exchange):
-            result = fetch_historical_market_data(
-                "BTC/USDT", "1h", start, start + pd.Timedelta(hours=110)
-            )
+        import tempfile
+        from pathlib import Path
+        with tempfile.TemporaryDirectory() as cache_dir:
+            with patch("demo_data.HISTORICAL_CACHE_DIR", Path(cache_dir)):
+                with patch("demo_data.ccxt.binance", return_value=exchange):
+                    result = fetch_historical_market_data(
+                        "BTC/USDT", "1h", start, start + pd.Timedelta(hours=110)
+                    )
         self.assertEqual(result.source, "Binance public historical OHLCV")
         self.assertFalse(result.used_fallback)
         self.assertEqual(len(result.frame), 110)
@@ -227,3 +231,4 @@ class HistoricalBacktestTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
