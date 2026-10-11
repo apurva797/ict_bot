@@ -84,7 +84,8 @@ def render_year_backtest_screen() -> None:
 
     interval = _interval(timeframe)
     now = pd.Timestamp.now(tz="UTC")
-    end = now.floor(timeframe)
+    floor_timeframe = f"{timeframe[:-1]}min" if timeframe.endswith("m") else timeframe
+    end = now.floor(floor_timeframe)
     start = end - pd.Timedelta(days=int(days))
     expected = int((end - start) / interval)
     if expected > demo_data.MAX_HISTORICAL_CANDLES:
