@@ -1,64 +1,50 @@
-# AI Algo Trading Demo
+# ARJUNA One-Year Backtest Add-on
 
-A simulation-only trading strategy platform. The shared app lets a user describe a rules-based idea, review and edit a validated specification, inspect a generated Python adapter, backtest it on normalized OHLCV, and paper-trade it in the current Streamlit session. ARJUNA (internal key `ICT`), Quant, and custom DSL strategies are plugins over shared market-data, backtest, risk, and paper-account services.
+This is an add-on package, not an automatic replacement for the existing application. It contains:
 
-> **DEMO MODE ONLY. LIVE ORDERS DISABLED.** The public app has no broker credential inputs or live order route. It does not provide investment advice or promise future performance.
+- `engine/year_backtest.py`: historical OHLCV loading, validation, caching, indicators, a risk-sized backtest engine, metrics, CSV/JSON export, and CLI.
+- `ui/research/year_backtest_screen.py`: optional Streamlit screen.
+- `tests/test_year_backtest.py`: basic tests using generated synthetic candles (tests only; not used as market data).
 
-## Current platform capabilities
+## 1. Copy files into the existing repo
 
-- **Shared strategy registry:** ARJUNA, Quant EMA trend following, Quant RSI mean reversion, and validated custom DSL plugins implement a common signal contract. ARJUNA retains its internal `ICT` key. New plugins can be added without rewriting the UI or simulation engines.
-- **Multi-strategy engine:** the Streamlit app calls the same `bot.py` analysis pipeline as the terminal bot: regime detection, all 15 existing signals, and the shared weighted scorer. Confirmation remains 4+ points or 2 independent heavy conditions. The CLI paper engine is 24/7; the app reports whether the signal/confirmation gates pass and keeps paper execution subject to cooldown, daily, ATR, and risk controls.
-- **Custom strategy workflow:** English, Hindi, and Hinglish rules are interpreted locally for common RSI, EMA/SMA, VWAP, price-vs-average, and previous-candle high/low conditions; Gemini can interpret additional requests when `GEMINI_API_KEY` is configured. The app asks a specific follow-up when an entry is ambiguous or refers to unsupported ARJUNA customization. Validated rules are shown as a confirmation, editable, backtestable, and paper-tradeable. Generated adapter source is deterministic and never executed by the app.
-- **ARJUNA:** existing liquidity sweep, displacement, market structure shift, FVG, order block, and higher-timeframe bias logic is preserved under the internal `ICT` identifier. ARJUNA paper entries are evaluated 24 hours a day; configured news blackout, 30-minute cooldown, fixed 1% risk, default 2R target (minimum allowed 1.5R), and 1x notional cap still apply. Time is displayed in UTC and IST.
-- **Quant:** configurable EMA crossover and RSI mean-reversion plugins use the same normalized candle data and paper/backtest engines.
-- **Chart:** TradingView Lightweight Charts 5.2.0 renders OHLCV supplied by this app's validated market-data provider. The chart does not fetch strategy data from TradingView. It needs a browser connection to jsDelivr for the chart library.
-- **Market data:** Binance public candles → Coinbase Exchange public candles → bundled historical CSV. The UI names the active source and labels fallback data. Sample data is not live data.
-- **Backtesting:** a separate historical-only section in the Multi-Strategy Engine replays the same `bot.py` strategy functions, regime detector, scorer, and confirmation result for each candle prefix. Binance and Coinbase public historical OHLCV are tried first; validated bundled sample CSV or an uploaded `timestamp,open,high,low,close,volume` file are available when needed. The current per-run cap is 1,000 candles to keep prefix replay responsive. It reports portfolio and per-strategy statistics, blocked signals, trades, equity, and drawdown. Funding/open-interest history is not available in this path, so the existing CRYPTO strategy slot is neutral during historical analysis. No paper account or live order state is changed.
-- **Research Hub Multi-Strategy backtest:** the active routed Research screen exposes the aggregate simulator separately from the single-plugin Backtest tab. It uses the same historical Multi-Strategy engine, selected strategy set, confirmation gate, risk controls, fees, slippage, and next-bar-open assumptions. The Trade screen links to this read-only surface; running it never creates or modifies a paper account.
-- **Backtest execution assumptions:** finalized-candle signals fill at the next bar open; the default fee is 0.04% and slippage 0.01% per side; risk is configurable up to the fixed 1% demo cap; minimum R:R is 1.5R and default target is 2R; maximum notional is 1x; a 30-minute cooldown and existing daily trade/loss limits apply. If SL and TP both occur in one candle, SL is chosen; positions open at the last available close if still open at end of data.
-- **Paper trading:** simulated, session-scoped state only. No real orders are sent. Refreshing or ending the session can lose the account and journal state.
+Copy the contents of this folder into the root of `C:\Users\shukl\OneDrive\Desktop\ict_bot`, preserving the `engine`, `ui/research`, and `tests` directories. If those directories already exist, copy only these new files and do not overwrite existing files.
 
-## Run locally
+## 2. Ensure dependencies exist
 
-Python 3.14 is the pinned deployment target. From PowerShell:
+The project's `requirements.txt` should contain these packages (the project already uses several):
 
-```powershell
-cd C:\path\to\ict_bot
-py -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install -r requirements.txt
-Copy-Item .env.example .env
-streamlit run app.py
+```text
+ccxt==4.5.78
+numpy==2.4.6
+pandas==3.0.5
+streamlit==1.64.0
 ```
 
-`app.py` is the Streamlit entrypoint. The local parser works without an API key for its documented rule patterns. To enable structured Gemini interpretation, set `GEMINI_API_KEY` in the local ignored `.env` file or in Streamlit Community Cloud's server-side Secrets. `GEMINI_MODEL` is optional. Never place the key in browser code or commit it. `OPENAI_API_KEY` remains as legacy parser compatibility and is used only when no Gemini key is configured.
+Use the project's existing Python version and dependency pins where possible. Do not replace the whole requirements file with this subset.
 
-## Deploy to Streamlit Community Cloud
-
-1. Push the reviewed repository to your GitHub repository.
-2. Create the Streamlit app from the repository's `main` branch and set the main file path to `app.py`.
-3. Python version is pinned to 3.12 in `.python-version`. `pandas==3.0.5` requires
-   Python >= 3.11, so deploying on 3.9/3.10 fails at install time with an
-   unresolved-dependency error.
-4. Add `GEMINI_API_KEY` (and optionally `GEMINI_MODEL`) through the app's server-side Secrets panel if Gemini interpretation is wanted. Do not add exchange or broker credentials.
-5. Deploy, then verify the demo safety banner, active market-data source, chart, an ARJUNA signal/backtest, a Quant backtest, custom rule validation, and paper account.
-
-## Safety boundary and implementation limits
-
-- `DEMO_MODE = True` and `LIVE_ORDERS_ENABLED = False` are fixed code constants; the UI, environment, and AI cannot enable live execution.
-- All Gemini output is schema-constrained JSON and passed through local DSL validation. Gemini has no app tools, shell, filesystem, broker, or arbitrary network access. Deterministic app code performs validation and execution.
-- Supported custom DSL indicators are `price`, `percentage_change`, `RSI`, `SMA`, `EMA`, `MACD`, `ATR`, daily UTC VWAP, and previous-candle high/low. Entry/exit lists are combined with AND; explicit indicator exits are optional because the fixed stop and target can close trades. Ambiguous price-action concepts receive a clarification instead of being silently approximated.
-- User-created strategies and paper accounts are held only in the current Streamlit session. There is no authentication, durable database, multi-user data isolation, or cloud journal persistence yet.
-- Research Assistant voice input records microphone audio in the browser and sends it to the backend for Sarvam Speech-to-Text (`saaras:v4`, code-mixed mode). The SARVAM_API_KEY is server-side only. Hindi, Hinglish, and English are supported through Sarvam's `unknown` language detection. Browser microphone permission and network access are required; typed input remains available as a fallback.
-- This repository does not yet include an economic-calendar feed, authenticated TradingView webhook, standalone API backend, persistent portfolio service, or user authentication. Those features are not simulated or represented as working integrations.
-- Lightweight Charts attribution is kept visible and its upstream notice is included in `NOTICE`. This app is an independent demo and is not affiliated with TradingView.
-- Backtest assumptions are simplified. Results are historical simulations, not a forecast or evidence of profitability. Sharpe/Sortino are unavailable when the sample is insufficient.
-
-## Tests and syntax checks
+## 3. Run tests in PowerShell
 
 ```powershell
-python -m unittest discover -s tests -v
-python -m compileall -q .
+cd "C:\Users\shukl\OneDrive\Desktop\ict_bot"
+python -m pytest tests/test_year_backtest.py -q
 ```
 
-Gemini unit tests mock the SDK call and do not use or reveal a real API key. Market-data provider behavior is mocked in tests except for bundled sample CSV reads.
+## 4. Run one-year historical backtest
+
+```powershell
+python -m engine.year_backtest --symbol BTC/USDT --timeframe 5m --days 365 --capital 100000 --strategy all
+```
+
+Artifacts are written to `backtest_results/`: strategy comparison, trades, equity curves, and JSON reports.
+
+## 5. Streamlit integration
+
+Import `render_year_backtest_screen` into the existing research screen/navigation and call it from a new navigation entry. The existing `app.py` and navigation are intentionally not rewritten because their current source was not supplied for safe editing.
+
+## Important limitations
+
+- The included strategies are transparent baseline examples (EMA crossover, RSI mean reversion, breakout, and a simple consensus strategy). They are **not** claimed to reproduce Arjuna's native ICT or Quant implementations. Connect the existing strategy signal functions through `run_backtest(..., signal_fn=...)` for faithful strategy results.
+- Historical candles from an exchange are subject to its symbol support, API limits, and data retention. Always review `data_quality` and warnings.
+- OHLCV cannot reveal the true intrabar order of stop and target. If both levels are touched in a candle, the engine assumes stop loss first.
+- This is research/backtesting code, not live execution code. Do not use results as a guarantee of future returns.

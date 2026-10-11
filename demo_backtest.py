@@ -177,7 +177,8 @@ def run_backtest(frame, strategy, starting_capital=10_000.0, fee_rate=0.0004, sl
     return metrics, pd.DataFrame(equity).set_index("time"), pd.DataFrame(trades, columns=trade_columns)
 
 
-def run_ict_backtest(frame, starting_capital=10_000.0, news_blackout=False):
+def run_ict_backtest(frame, starting_capital=10_000.0, news_blackout=False,
+                     fee_rate=0.0004, slippage=0.0001):
     """Backtest the preserved ICT signal at each finalized candle close."""
     from demo_safety import ict_entry_gate
     from strategies.ict import ict_signal
@@ -198,7 +199,8 @@ def run_ict_backtest(frame, starting_capital=10_000.0, news_blackout=False):
     signals = pd.Series(sides, index=frame.index)
     strategy = {"side": "BUY", "entry": [{"indicator": "price", "operator": ">", "value": 0}],
                 "exit": [{"indicator": "price", "operator": ">", "value": 0}]}
-    return run_backtest(frame, strategy, starting_capital=starting_capital, signal_sides=signals)
+    return run_backtest(frame, strategy, starting_capital=starting_capital,
+                        fee_rate=fee_rate, slippage=slippage, signal_sides=signals)
 
 
 def _trade(position, closed_at, exit_price, reason, gross, fees, pnl, slippage_cost=0.0):
