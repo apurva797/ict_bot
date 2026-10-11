@@ -278,8 +278,6 @@ def _historical_binance(symbol, timeframe, start_ms, end_ms, max_candles):
         if last_ms < since:
             break
         since = last_ms + interval_ms
-        if len(batch) < 1000:
-            break
     rows_by_timestamp = {int(row[0]): row for row in rows}
     finalized = [rows_by_timestamp[key] for key in sorted(rows_by_timestamp)
                  if key + interval_ms <= end_ms]
