@@ -353,6 +353,63 @@ def _historical_coinbase(symbol, timeframe, start_ms, end_ms):
     return validate_ohlcv([rows_by_timestamp[key] for key in sorted(rows_by_timestamp)], minimum=1)
 
 
+def _historical_gateio(symbol, timeframe, start_ms, end_ms):
+    """Fetch public Gate.io spot candles as an independent gap-recovery source."""
+    pairs = {"BTC/USDT": "BTC_USDT", "ETH/USDT": "ETH_USDT", "SOL/USDT": "SOL_USDT"}
+    if symbol not in pairs:
+        raise MarketDataError("Gate.io does not support the selected market.")
+    interval_ms = SUPPORTED_INTERVALS[timeframe]
+    interval_seconds = interval_ms // 1000
+    rows_by_timestamp = {}
+    cursor = start_ms // 1000
+    end_seconds = end_ms // 1000
+    client = requests.Session()
+    while cursor < end_seconds:
+        chunk_end = min(cursor + 999 * interval_seconds, end_seconds)
+        last_error = None
+        payload = None
+        for attempt in range(3):
+            try:
+                response = client.get(
+                    "https://api.gateio.ws/api/v4/spot/candlesticks",
+                    params={"currency_pair": pairs[symbol], "interval": timeframe,
+                            "from": cursor, "to": chunk_end, "limit": 1000},
+                    timeout=12,
+                    headers={"Accept": "application/json", "User-Agent": "ict-demo-public-market-data/1.0"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.25 * (2 ** attempt))
+        if last_error is not None:
+            raise MarketDataError("Gate.io historical candle request failed after retries.") from last_error
+        if not isinstance(payload, list):
+            raise MarketDataError("Gate.io returned a malformed candle response.")
+        batch_timestamps = []
+        for candle in payload:
+            if not isinstance(candle, (list, tuple)) or len(candle) < 6:
+                raise MarketDataError("Gate.io returned a malformed candle row.")
+            # Gate.io order: timestamp, volume, close, high, low, open, ...
+            timestamp_ms = int(candle[0]) * 1000
+            batch_timestamps.append(timestamp_ms)
+            if start_ms <= timestamp_ms < end_ms and timestamp_ms + interval_ms <= end_ms:
+                rows_by_timestamp[timestamp_ms] = [timestamp_ms, candle[5], candle[3], candle[4], candle[2], candle[1]]
+        if not batch_timestamps:
+            break
+        next_cursor = max(batch_timestamps) // 1000 + interval_seconds
+        if next_cursor <= cursor:
+            raise MarketDataError("Gate.io historical pagination made no forward progress.")
+        cursor = next_cursor
+        time.sleep(0.08)
+    if not rows_by_timestamp:
+        raise MarketDataError("Gate.io returned no historical candles.")
+    return validate_ohlcv([rows_by_timestamp[key] for key in sorted(rows_by_timestamp)], minimum=1)
+
+
 def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
                                 max_candles=MAX_HISTORICAL_CANDLES):
     """Fetch a UTC date range from public OHLCV history, or filter an uploaded CSV.
@@ -413,6 +470,7 @@ def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
     providers = (
         ("Binance public historical OHLCV", lambda a, b: _historical_binance(symbol, timeframe, a, b, max_candles)),
         ("Coinbase Exchange public historical OHLCV", lambda a, b: _historical_coinbase(symbol, timeframe, a, b)),
+        ("Gate.io public historical OHLCV", lambda a, b: _historical_gateio(symbol, timeframe, a, b)),
     )
     failures = []
     collected = []
@@ -441,7 +499,7 @@ def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
                 combined = combined.loc[~combined.index.duplicated(keep="first")]
             missing = expected_index.difference(combined.index) if not combined.empty else expected_index
             if len(missing) == 0 and combined.index.equals(expected_index):
-                source = used_names[0] if len(used_names) == 1 else "Merged Binance + Coinbase historical OHLCV"
+                source = used_names[0] if len(used_names) == 1 else "Merged multi-provider historical OHLCV"
                 if cache_file is not None:
                     try:
                         out = combined.rename_axis("timestamp").reset_index()
@@ -501,7 +559,7 @@ def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
             f"Providers: {', '.join(used_names) or 'none'}. {diagnostics}"
         )
 
-    source = used_names[0] if len(used_names) == 1 else "Merged Binance + Coinbase historical OHLCV"
+    source = used_names[0] if len(used_names) == 1 else "Merged multi-provider historical OHLCV"
     if cache_file is not None:
         try:
             out = combined.rename_axis("timestamp").reset_index()

@@ -23,7 +23,7 @@ def test_merges_compatible_providers_to_exact_expected_index(tmp_path, monkeypat
         result = demo_data.fetch_historical_market_data("BTC/USDT", "1h", start, end)
     assert result.frame.index.equals(expected)
     assert len(result.frame) == 110
-    assert result.source == "Merged Binance + Coinbase historical OHLCV"
+    assert result.source == "Merged multi-provider historical OHLCV"
 
 
 def test_complete_primary_provider_short_circuits_secondary(tmp_path, monkeypatch):
@@ -45,7 +45,8 @@ def test_unresolved_gaps_fail_closed(tmp_path, monkeypatch):
     partial = _frame(expected.delete([20, 65]))
     monkeypatch.setattr(demo_data, "HISTORICAL_CACHE_DIR", tmp_path)
     with patch.object(demo_data, "_historical_binance", return_value=partial), \
-         patch.object(demo_data, "_historical_coinbase", return_value=partial):
+         patch.object(demo_data, "_historical_coinbase", return_value=partial), \
+         patch.object(demo_data, "_historical_gateio", return_value=partial):
         with pytest.raises(demo_data.MarketDataError, match="Incomplete historical coverage"):
             demo_data.fetch_historical_market_data("BTC/USDT", "1h", start, end)
 
@@ -62,4 +63,4 @@ def test_targeted_gap_recovery_fetches_only_the_missing_data_window(tmp_path, mo
         result = demo_data.fetch_historical_market_data("BTC/USDT", "1h", start, end)
     assert result.frame.index.equals(expected)
     assert len(result.frame) == 110
-    assert result.source == "Merged Binance + Coinbase historical OHLCV"
+    assert result.source == "Merged multi-provider historical OHLCV"
