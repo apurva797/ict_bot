@@ -49,3 +49,76 @@ def test_backtest_returns_metrics_and_trade_schema():
 def test_invalid_config_rejected():
     with pytest.raises(ValueError):
         BacktestConfig(days=500).validate()
+
+
+def test_year_backtest_bybit_fallback_and_exact_coverage(tmp_path, monkeypatch):
+    from engine import year_backtest as yb
+
+    index = pd.date_range("2025-01-01T00:00:00Z", periods=24, freq="1h")
+    frame = pd.DataFrame({
+        "timestamp": index,
+        "open": np.full(24, 100.0),
+        "high": np.full(24, 102.0),
+        "low": np.full(24, 99.0),
+        "close": np.full(24, 101.0),
+        "volume": np.full(24, 10.0),
+    })
+    calls = []
+
+    def fake_exchange(exchange_id, symbol, timeframe, start_ms, end_ms, rate_limit=True):
+        calls.append(exchange_id)
+        if exchange_id == "binance":
+            return frame.iloc[:-2].copy()
+        if exchange_id == "bybit":
+            return frame.copy()
+        raise AssertionError(f"Unexpected provider: {exchange_id}")
+
+    monkeypatch.setattr(yb, "_exchange_ohlcv", fake_exchange)
+    config = yb.BacktestConfig(
+        symbol="BTC/USDT", timeframe="1h", days=1,
+        exchange_id="binance", data_source="auto",
+        gap_policy="fail", cache_dir=str(tmp_path),
+    )
+
+    result, quality, warnings = yb.load_historical_data(
+        config,
+        start=pd.Timestamp("2025-01-01T00:00:00Z"),
+        end=pd.Timestamp("2025-01-02T00:00:00Z"),
+    )
+
+    assert calls == ["binance", "bybit"]
+    assert len(result) == 24
+    assert quality["source"] == "bybit"
+    assert quality["missing_candles_estimate"] == 0
+    assert quality["unexpected_candles"] == 0
+    assert quality["coverage_pct_estimate"] == 100.0
+    assert warnings
+
+
+def test_year_backtest_fail_policy_rejects_wrong_timestamp(tmp_path, monkeypatch):
+    from engine import year_backtest as yb
+
+    index = pd.date_range("2025-01-01T00:00:00Z", periods=24, freq="1h")
+    frame = pd.DataFrame({
+        "timestamp": index,
+        "open": np.full(24, 100.0),
+        "high": np.full(24, 102.0),
+        "low": np.full(24, 99.0),
+        "close": np.full(24, 101.0),
+        "volume": np.full(24, 10.0),
+    })
+    frame.loc[23, "timestamp"] = pd.Timestamp("2025-01-01T23:30:00Z")
+
+    monkeypatch.setattr(yb, "_exchange_ohlcv", lambda *args, **kwargs: frame.copy())
+    config = yb.BacktestConfig(
+        symbol="BTC/USDT", timeframe="1h", days=1,
+        exchange_id="binance", data_source="binance",
+        gap_policy="fail", cache_dir=str(tmp_path),
+    )
+
+    with pytest.raises(RuntimeError, match="complete historical data"):
+        yb.load_historical_data(
+            config,
+            start=pd.Timestamp("2025-01-01T00:00:00Z"),
+            end=pd.Timestamp("2025-01-02T00:00:00Z"),
+        )

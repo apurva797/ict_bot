@@ -224,78 +224,147 @@ def _exchange_ohlcv(exchange_id: str, symbol: str, timeframe: str,
 def load_historical_data(config: BacktestConfig,
                          start: Optional[pd.Timestamp] = None,
                          end: Optional[pd.Timestamp] = None) -> tuple[pd.DataFrame, dict, list[str]]:
-    """Load one requested period. Returns candles, quality metadata, and warnings."""
+    """Load historical candles and validate exact timestamp coverage."""
     config.validate()
+
     end_ts = _utc_timestamp(config.end_date) if config.end_date else pd.Timestamp.now(tz="UTC")
-    # Include the candle beginning at the end boundary only if it is already complete.
     end_ts = end_ts.floor("min")
-    start_ts = start or (end_ts - pd.Timedelta(days=config.days))
-    start_ts = _utc_timestamp(start_ts)
+    start_ts = _utc_timestamp(start if start is not None else end_ts - pd.Timedelta(days=config.days))
     end_ts = _utc_timestamp(end if end is not None else end_ts)
+
     if start_ts >= end_ts:
         raise ValueError("start date must be earlier than end date")
+
+    step_ms = TIMEFRAME_MS[config.timeframe]
+    step = pd.Timedelta(milliseconds=step_ms)
+    start_ms = int(start_ts.timestamp() * 1000)
+    end_ms = int(end_ts.timestamp() * 1000)
+    first_ms = ((start_ms + step_ms - 1) // step_ms) * step_ms
+
+    expected_index = pd.date_range(
+        start=pd.to_datetime(first_ms, unit="ms", utc=True),
+        end=end_ts - pd.Timedelta(nanoseconds=1),
+        freq=step,
+    ) if first_ms < end_ms else pd.DatetimeIndex([], tz="UTC")
+
+    expected = len(expected_index)
+    if expected == 0:
+        raise ValueError("Requested interval contains no complete timeframe candles")
+
     cache_dir = Path(config.cache_dir)
     cache_dir.mkdir(parents=True, exist_ok=True)
-    warnings: list[str] = []
-    candidates: list[str]
+    warnings = []
+    errors = []
+    best_partial = None
+
     if config.data_source == "csv":
         candidates = ["csv"]
-    elif config.data_source == "binance":
-        candidates = ["binance"]
-    elif config.data_source == "coinbase":
-        candidates = ["coinbase"]
+    elif config.data_source in {"binance", "coinbase", "bybit"}:
+        candidates = [config.data_source]
     else:
-        candidates = [config.exchange_id or "binance", "coinbase"]
+        candidates = list(dict.fromkeys([
+            config.exchange_id or "binance", "bybit", "coinbase"
+        ]))
+
     if config.csv_path:
         candidates = ["csv"] + [x for x in candidates if x != "csv"]
-    errors: list[str] = []
+
+    def assess(raw):
+        frame = normalize_ohlcv(raw)
+        frame = frame[
+            (frame.timestamp >= start_ts) & (frame.timestamp < end_ts)
+        ].copy()
+        frame = normalize_ohlcv(frame)
+
+        actual_index = pd.DatetimeIndex(frame["timestamp"])
+        missing = expected_index.difference(actual_index)
+        unexpected = actual_index.difference(expected_index)
+        matched = len(expected_index.intersection(actual_index))
+
+        quality = {
+            "symbol": config.symbol,
+            "timeframe": config.timeframe,
+            "requested_start_utc": start_ts.isoformat(),
+            "requested_end_utc": end_ts.isoformat(),
+            "actual_start_utc": frame.timestamp.min().isoformat(),
+            "actual_end_utc": frame.timestamp.max().isoformat(),
+            "expected_candles_estimate": expected,
+            "actual_candles": len(frame),
+            "missing_candles_estimate": len(missing),
+            "unexpected_candles": len(unexpected),
+            "coverage_pct_estimate": round(100.0 * matched / expected, 3),
+        }
+        complete = len(missing) == 0 and len(unexpected) == 0
+        return frame, quality, complete
+
     for source in candidates:
-        exchange_id = source if source != "csv" else "csv"
-        cache_path = cache_dir / _cache_name(config, start_ts, end_ts, exchange_id)
+        cache_path = cache_dir / _cache_name(config, start_ts, end_ts, source)
+
         try:
-            if cache_path.exists():
-                frame = normalize_ohlcv(pd.read_csv(cache_path))
-                source_label = f"cache:{exchange_id}"
-            elif source == "csv":
+            label = source
+            frame = None
+
+            if source == "csv":
                 if not config.csv_path:
                     raise ValueError("CSV source selected but csv_path was not provided")
-                raw = pd.read_csv(config.csv_path)
-                frame = normalize_ohlcv(raw)
-                source_label = f"csv:{config.csv_path}"
+                frame = normalize_ohlcv(pd.read_csv(config.csv_path))
+                label = f"csv:{config.csv_path}"
             else:
-                frame = _exchange_ohlcv(source, config.symbol, config.timeframe,
-                                        int(start_ts.timestamp() * 1000), int(end_ts.timestamp() * 1000))
-                source_label = source
-            frame = frame[(frame.timestamp >= start_ts) & (frame.timestamp < end_ts)].copy()
-            frame = normalize_ohlcv(frame)
-            # Cache only the validated requested slice.
-            frame.to_csv(cache_path, index=False)
-            expected = max(1, int((end_ts - start_ts).total_seconds() * 1000 / TIMEFRAME_MS[config.timeframe]))
-            actual = len(frame)
-            gaps = max(0, expected - actual)
-            coverage = min(100.0, 100.0 * actual / expected)
-            quality = {
-                "source": source_label,
-                "symbol": config.symbol,
-                "timeframe": config.timeframe,
-                "requested_start_utc": start_ts.isoformat(),
-                "requested_end_utc": end_ts.isoformat(),
-                "actual_start_utc": frame.timestamp.min().isoformat(),
-                "actual_end_utc": frame.timestamp.max().isoformat(),
-                "expected_candles_estimate": expected,
-                "actual_candles": actual,
-                "missing_candles_estimate": gaps,
-                "coverage_pct_estimate": round(coverage, 3),
-            }
-            if gaps:
-                warnings.append(f"Historical coverage is approximately {coverage:.2f}% ({actual}/{expected} expected candles). Missing candles were not fabricated.")
-                if config.gap_policy == "fail":
-                    raise RuntimeError(warnings[-1])
-            return frame, quality, warnings
+                if cache_path.exists():
+                    try:
+                        cached = pd.read_csv(cache_path)
+                        cached, _, cached_complete = assess(cached)
+                        if cached_complete:
+                            frame = cached
+                            label = f"cache:{source}"
+                        else:
+                            warnings.append(f"Ignoring incomplete cache for {source}")
+                    except Exception as exc:
+                        warnings.append(f"Ignoring invalid cache for {source}: {exc}")
+
+                if frame is None:
+                    frame = _exchange_ohlcv(
+                        source, config.symbol, config.timeframe, start_ms, end_ms
+                    )
+
+            frame, quality, complete = assess(frame)
+            quality["source"] = label
+
+            if complete:
+                if source != "csv" and not label.startswith("cache:"):
+                    frame.to_csv(cache_path, index=False)
+                return frame, quality, warnings
+
+            warning = (
+                f"{source} returned incomplete coverage: "
+                f"{quality['coverage_pct_estimate']:.3f}% "
+                f"({quality['actual_candles']}/{expected} rows), "
+                f"{quality['missing_candles_estimate']} missing timestamps and "
+                f"{quality['unexpected_candles']} unexpected timestamps. "
+                "Missing candles were not fabricated."
+            )
+            warnings.append(warning)
+
+            if best_partial is None or (
+                quality["coverage_pct_estimate"] >
+                best_partial[1]["coverage_pct_estimate"]
+            ):
+                best_partial = (frame.copy(), quality.copy(), source)
+
         except Exception as exc:
             errors.append(f"{source}: {exc}")
             warnings.append(f"Data source {source} failed: {exc}")
-    raise RuntimeError("Could not load historical data. " + " | ".join(errors))
+
+    if best_partial is not None and config.gap_policy == "report":
+        frame, quality, source = best_partial
+        quality["source"] = source
+        return frame, quality, warnings
+
+    details = " | ".join(errors) if errors else "No source returned complete coverage."
+    raise RuntimeError(
+        "Could not load complete historical data. "
+        "Missing candles were not fabricated. " + details
+    )
 
 
 # ---------------------------- Indicator layer ------------------------------
