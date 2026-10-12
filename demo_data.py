@@ -262,26 +262,47 @@ def load_uploaded_ohlcv(uploaded_file):
 
 
 def _historical_binance(symbol, timeframe, start_ms, end_ms, max_candles):
+    """Fetch paginated Binance history without treating short pages as EOF."""
     import ccxt
 
     exchange = ccxt.binance({"enableRateLimit": True, "timeout": 12_000,
                              "options": {"defaultType": "spot"}})
     interval_ms = SUPPORTED_INTERVALS[timeframe]
-    rows, since = [], start_ms
-    while since < end_ms and len(rows) < max_candles:
-        batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since,
-                                     limit=min(1000, max_candles - len(rows)))
+    rows_by_timestamp = {}
+    since = start_ms
+    while since < end_ms and len(rows_by_timestamp) < max_candles:
+        limit = min(1000, max_candles - len(rows_by_timestamp))
+        batch = None
+        last_error = None
+        for attempt in range(3):
+            try:
+                batch = exchange.fetch_ohlcv(symbol, timeframe=timeframe, since=since, limit=limit)
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.25 * (2 ** attempt))
+        if last_error is not None:
+            raise MarketDataError("Binance historical candle request failed after retries.") from last_error
         if not batch:
             break
-        rows.extend(row for row in batch if start_ms <= int(row[0]) < end_ms)
+        for row in batch:
+            timestamp = int(row[0])
+            if start_ms <= timestamp < end_ms:
+                rows_by_timestamp[timestamp] = row
         last_ms = int(batch[-1][0])
-        if last_ms < since:
-            break
-        since = last_ms + interval_ms
-    rows_by_timestamp = {int(row[0]): row for row in rows}
+        next_since = last_ms + interval_ms
+        if next_since <= since:
+            raise MarketDataError("Binance historical pagination made no forward progress.")
+        since = next_since
+        # Short pages can occur before the end of the requested range. Continue
+        # from the last actual candle and let exact-index validation detect gaps.
     finalized = [rows_by_timestamp[key] for key in sorted(rows_by_timestamp)
                  if key + interval_ms <= end_ms]
-    return validate_ohlcv(finalized, minimum=100)
+    if not finalized:
+        raise MarketDataError("Binance returned no finalized historical candles.")
+    return validate_ohlcv(finalized, minimum=1)
 
 
 def _historical_coinbase(symbol, timeframe, start_ms, end_ms):
@@ -298,13 +319,24 @@ def _historical_coinbase(symbol, timeframe, start_ms, end_ms):
             "start": datetime.fromtimestamp(cursor / 1000, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
             "end": datetime.fromtimestamp(chunk_end / 1000, timezone.utc).isoformat(timespec="seconds").replace("+00:00", "Z"),
         }
-        response = client.get(
-            f"https://api.exchange.coinbase.com/products/{COINBASE_PRODUCT_IDS[symbol]}/candles",
-            params=params, timeout=12,
-            headers={"Accept": "application/json", "User-Agent": "ict-demo-public-market-data/1.0"},
-        )
-        response.raise_for_status()
-        payload = response.json()
+        last_error = None
+        for attempt in range(3):
+            try:
+                response = client.get(
+                    f"https://api.exchange.coinbase.com/products/{COINBASE_PRODUCT_IDS[symbol]}/candles",
+                    params=params, timeout=12,
+                    headers={"Accept": "application/json", "User-Agent": "ict-demo-public-market-data/1.0"},
+                )
+                response.raise_for_status()
+                payload = response.json()
+                last_error = None
+                break
+            except Exception as exc:
+                last_error = exc
+                if attempt < 2:
+                    time.sleep(0.25 * (2 ** attempt))
+        if last_error is not None:
+            raise MarketDataError("Coinbase historical candle request failed after retries.") from last_error
         if not isinstance(payload, list):
             raise MarketDataError("Coinbase returned a malformed candle response.")
         for candle in payload:
@@ -314,8 +346,11 @@ def _historical_coinbase(symbol, timeframe, start_ms, end_ms):
             timestamp_ms = int(timestamp) * 1000
             if start_ms <= timestamp_ms < end_ms and timestamp_ms + interval_ms <= end_ms:
                 rows_by_timestamp[timestamp_ms] = [timestamp_ms, open_, high, low, close, volume]
-        cursor = chunk_end
-    return validate_ohlcv([rows_by_timestamp[key] for key in sorted(rows_by_timestamp)], minimum=100)
+        cursor = chunk_end + interval_ms
+        time.sleep(0.08)  # bounded pacing for public endpoint limits
+    if not rows_by_timestamp:
+        raise MarketDataError("Coinbase returned no historical candles.")
+    return validate_ohlcv([rows_by_timestamp[key] for key in sorted(rows_by_timestamp)], minimum=1)
 
 
 def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
@@ -351,68 +386,130 @@ def fetch_historical_market_data(symbol, timeframe, start, end, csv_data=None,
             raise MarketDataError("The uploaded CSV has fewer than 100 valid candles in the selected date range.")
         return MarketDataResult(frame=frame, source="Uploaded OHLCV CSV", used_fallback=False)
 
+    expected_index = pd.date_range(start=start_ts, end=end_ts - pd.Timedelta(milliseconds=interval_ms),
+                                   freq=pd.Timedelta(milliseconds=interval_ms), tz="UTC")
+    if len(expected_index) != expected:
+        raise MarketDataError("Requested historical range is not aligned to the selected candle interval.")
+
     cache_file = None
     try:
         HISTORICAL_CACHE_DIR.mkdir(parents=True, exist_ok=True)
         clean_sym = symbol.replace("/", "_").replace("-", "_")
         cache_file = HISTORICAL_CACHE_DIR / f"{clean_sym}_{timeframe}_{start_ts.strftime('%Y%m%d')}_{end_ts.strftime('%Y%m%d')}.csv"
-        for existing in sorted(HISTORICAL_CACHE_DIR.glob(f"{clean_sym}_{timeframe}_*.csv"), reverse=True):
+        if cache_file.exists():
             try:
-                cached_frame = load_uploaded_ohlcv(existing)
-                sub = cached_frame.loc[(cached_frame.index >= start_ts) & (cached_frame.index < end_ts)]
-                expected_index = pd.date_range(start=start_ts, periods=expected, freq=pd.Timedelta(milliseconds=interval_ms))
-                if sub.index.equals(expected_index):
-                    return MarketDataResult(frame=sub, source=f"Cached historical OHLCV ({existing.name})", used_fallback=False)
-            except Exception:
-                continue
+                cached_frame = load_uploaded_ohlcv(cache_file)
+                cached_frame = cached_frame.loc[(cached_frame.index >= start_ts) & (cached_frame.index < end_ts)]
+                cached_frame = cached_frame.loc[~cached_frame.index.duplicated(keep="last")].sort_index()
+                if cached_frame.index.equals(expected_index):
+                    return MarketDataResult(frame=cached_frame, source=f"Cached historical OHLCV ({cache_file.name})", used_fallback=False)
+                LOGGER.info("Ignoring incomplete historical cache %s: %s/%s candles", cache_file.name, len(cached_frame), len(expected_index))
+            except Exception as exc:
+                LOGGER.info("Ignoring invalid historical cache %s: %s", cache_file.name, type(exc).__name__)
     except Exception as exc:
         LOGGER.debug("Historical cache lookup failed: %s", exc)
 
-    finalized_end_ms = min(end_ms, int(time.time() * 1000))
+    finalized_end_ms = min(end_ms, (int(time.time() * 1000) // interval_ms) * interval_ms)
     providers = (
-        ("Binance public historical OHLCV", lambda: _historical_binance(symbol, timeframe, start_ms, finalized_end_ms, max_candles)),
-        ("Coinbase Exchange public historical OHLCV", lambda: _historical_coinbase(symbol, timeframe, start_ms, finalized_end_ms)),
+        ("Binance public historical OHLCV", lambda a, b: _historical_binance(symbol, timeframe, a, b, max_candles)),
+        ("Coinbase Exchange public historical OHLCV", lambda a, b: _historical_coinbase(symbol, timeframe, a, b)),
     )
     failures = []
-    frames = []
-    expected_index = pd.date_range(start=start_ts, periods=expected, freq=pd.Timedelta(milliseconds=interval_ms))
+    collected = []
+    used_names = []
+
+    def normalize(frame):
+        if frame is None or frame.empty:
+            return pd.DataFrame(columns=["open", "high", "low", "close", "volume"],
+                                index=pd.DatetimeIndex([], tz="UTC", name="time"))
+        if not isinstance(frame.index, pd.DatetimeIndex):
+            raise MarketDataError("Historical provider returned a non-datetime index.")
+        out = frame.copy()
+        out.index = pd.to_datetime(out.index, utc=True)
+        out = out.loc[(out.index >= start_ts) & (out.index < end_ts)]
+        out = out.loc[~out.index.duplicated(keep="last")].sort_index()
+        return out
 
     for name, provider in providers:
         try:
-            frame = provider()
-            frame = frame.loc[(frame.index >= start_ts) & (frame.index < end_ts)]
+            frame = normalize(provider(start_ms, finalized_end_ms))
             if not frame.empty:
-                frames.append(frame)
+                collected.append(frame)
+                used_names.append(name)
+            combined = pd.concat(collected).sort_index() if collected else pd.DataFrame()
+            if not combined.empty:
+                combined = combined.loc[~combined.index.duplicated(keep="first")]
+            missing = expected_index.difference(combined.index) if not combined.empty else expected_index
+            if len(missing) == 0 and combined.index.equals(expected_index):
+                source = used_names[0] if len(used_names) == 1 else "Merged Binance + Coinbase historical OHLCV"
+                if cache_file is not None:
+                    try:
+                        out = combined.rename_axis("timestamp").reset_index()
+                        out.to_csv(cache_file, index=False)
+                    except Exception as save_exc:
+                        LOGGER.debug("Historical cache save failed: %s", save_exc)
+                return MarketDataResult(frame=combined, source=source, used_fallback=(len(used_names) > 1 or used_names[0] != providers[0][0]))
+            LOGGER.info("Historical source %s coverage: %s/%s; remaining gaps=%s",
+                        name, len(combined), len(expected_index), len(missing))
         except Exception as exc:
-            failures.append(f"{name}: {type(exc).__name__}")
+            failures.append(f"{name}: {type(exc).__name__}: {exc}")
             LOGGER.warning("Historical source %s failed: %s", name, type(exc).__name__)
 
-    if frames:
-        combined = pd.concat(frames)
-        combined = combined.loc[~combined.index.duplicated(keep="first")].sort_index()
-        combined = combined.reindex(expected_index)
-        required_columns = ["open", "high", "low", "close", "volume"]
-        if all(column in combined.columns for column in required_columns) and not combined[required_columns].isna().any().any():
-            frame = combined
-            if cache_file is not None:
-                try:
-                    frame.reset_index().rename(columns={"index": "time"}).to_csv(cache_file, index=False)
-                except Exception as save_exc:
-                    LOGGER.debug("Historical cache save failed: %s", save_exc)
-            source_name = "Binance public historical OHLCV" if frames and frames[0].index.equals(expected_index) else "Merged Binance + Coinbase historical OHLCV"
-            return MarketDataResult(frame=frame, source=source_name, used_fallback=False)
+    # Targeted recovery: query each provider only for missing contiguous ranges.
+    combined = pd.concat(collected).sort_index() if collected else pd.DataFrame()
+    if not combined.empty:
+        combined = combined.loc[~combined.index.duplicated(keep="first")]
+    for recovery_name, recovery_provider in providers:
+        missing = expected_index.difference(combined.index) if not combined.empty else expected_index
+        if len(missing) == 0:
+            break
+        # Coalesce gaps into bounded windows to avoid one HTTP request per candle.
+        # Coinbase supports at most 300 candles per request; 250 leaves boundary room.
+        expected_positions = expected_index.get_indexer(missing)
+        chunk_ids = sorted(set(int(position) // 250 for position in expected_positions if position >= 0))
+        recovery_windows = []
+        for chunk_id in chunk_ids:
+            left = max(0, chunk_id * 250 - 2)
+            right = min(len(expected_index), (chunk_id + 1) * 250 + 2)
+            recovery_windows.append((expected_index[left], expected_index[right - 1] + pd.Timedelta(milliseconds=interval_ms)))
+        recovered_frames = []
+        for gap_start, gap_end in recovery_windows:
+            try:
+                gap_frame = normalize(recovery_provider(int(gap_start.timestamp() * 1000),
+                                                        min(int(gap_end.timestamp() * 1000), finalized_end_ms)))
+                if not gap_frame.empty:
+                    recovered_frames.append(gap_frame)
+            except Exception as exc:
+                LOGGER.info("Targeted gap recovery failed via %s for %s..%s: %s",
+                            recovery_name, gap_start.isoformat(), gap_end.isoformat(), type(exc).__name__)
+        if recovered_frames:
+            combined = pd.concat([combined, *recovered_frames]).sort_index() if not combined.empty else pd.concat(recovered_frames).sort_index()
+            combined = combined.loc[~combined.index.duplicated(keep="first")]
+            if recovery_name not in used_names:
+                used_names.append(recovery_name)
 
-        missing_count = int(combined[required_columns].isna().any(axis=1).sum()) if all(column in combined.columns for column in required_columns) else expected
-        failures.append(f"Merged historical sources still have {missing_count} missing candles")
+    missing = expected_index.difference(combined.index) if not combined.empty else expected_index
+    extra = combined.index.difference(expected_index) if not combined.empty else expected_index[:0]
+    if len(missing) or len(extra) or len(combined) != len(expected_index) or not combined.index.equals(expected_index):
+        gaps = ", ".join(stamp.isoformat() for stamp in missing[:12])
+        if len(missing) > 12:
+            gaps += f", ... (+{len(missing) - 12} more)"
+        diagnostics = "; ".join(failures)
+        raise MarketDataError(
+            f"Incomplete historical coverage: expected {len(expected_index):,}, received {len(combined):,}, "
+            f"missing {len(missing):,}, extra {len(extra):,}. First missing timestamps: {gaps or 'none'}. "
+            f"Providers: {', '.join(used_names) or 'none'}. {diagnostics}"
+        )
 
-    try:
-        sample = _load_sample_ohlcv(symbol, timeframe, min(max_candles, 1000))
-        sample = sample.loc[(sample.index >= start_ts) & (sample.index < end_ts)]
-        if len(sample) >= 100:
-            return MarketDataResult(sample, "Bundled historical sample CSV (not live)", True)
-    except Exception as exc:
-        failures.append(f"Bundled sample: {type(exc).__name__}")
-    raise MarketDataError("No historical candles are available for that range. Upload an OHLCV CSV. " + "; ".join(failures))
+    source = used_names[0] if len(used_names) == 1 else "Merged Binance + Coinbase historical OHLCV"
+    if cache_file is not None:
+        try:
+            out = combined.rename_axis("timestamp").reset_index()
+            out.to_csv(cache_file, index=False)
+        except Exception as save_exc:
+            LOGGER.debug("Historical cache save failed: %s", save_exc)
+    return MarketDataResult(frame=combined, source=source,
+                            used_fallback=(len(used_names) > 1 or (bool(used_names) and used_names[0] != providers[0][0])))
 
 
 _SNAPSHOT_CACHE = {}
