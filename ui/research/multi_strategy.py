@@ -9,6 +9,7 @@ import pandas as pd
 import streamlit as st
 
 from multi_strategy_backtest import run_multi_strategy_backtest
+from engine.validation_gate import ValidationEvidence, ValidationStatus, evaluate_strategy
 from ui import components as ui
 from ui import marketdata
 
@@ -238,3 +239,70 @@ def _render_result(result: dict) -> None:
     if not blocked.empty:
         with st.expander(f"Blocked signals ({len(blocked)})"):
             st.dataframe(blocked, width="stretch", hide_index=True)
+
+    _render_validation_gate(result)
+
+
+def _render_validation_gate(result: dict) -> None:
+    """Collect separately measured validation evidence; never infer missing tests."""
+    st.subheader("Strategy Validation Gate")
+    st.caption(
+        "Eligibility requires separate out-of-sample, walk-forward, cost-aware, and "
+        "parameter-sensitivity evidence. Enter measured results only; this form does "
+        "not run those experiments or independently verify pasted metrics."
+    )
+    with st.form("research_strategy_validation_gate_form"):
+        strategy_id = st.text_input("Strategy ID", value="multi_strategy")
+        evidence_ref = st.text_input(
+            "Evidence/run reference", placeholder="e.g. report filename or experiment ID"
+        )
+        first, second, third = st.columns(3)
+        total_trades_raw = first.text_input("Total trades (measured)", placeholder="e.g. 150")
+        oos_trades_raw = second.text_input("OOS trades (measured)", placeholder="e.g. 45")
+        oos_return_raw = third.text_input("OOS net return %", placeholder="e.g. 7.5")
+        first, second = st.columns(2)
+        drawdown_raw = first.text_input("Maximum drawdown % (positive value)", placeholder="e.g. 12.0")
+        sensitivity_raw = second.text_input("Worst parameter degradation %", placeholder="e.g. 18.0")
+        folds_raw = st.text_input(
+            "Walk-forward net fold returns % (comma-separated)",
+            placeholder="e.g. 2.1, 1.2, -0.3, 3.0"
+        )
+        oos_done = st.checkbox("A separate out-of-sample period was evaluated")
+        costs_included = st.checkbox("Both fees and slippage are included in these results")
+        submitted = st.form_submit_button("Evaluate validation evidence")
+    if submitted:
+        def optional_int(raw: str):
+            return int(raw.strip()) if raw.strip() else None
+        def optional_float(raw: str):
+            return float(raw.strip()) if raw.strip() else None
+        try:
+            folds = None if not folds_raw.strip() else tuple(
+                float(item.strip()) for item in folds_raw.split(",") if item.strip()
+            )
+            evidence = ValidationEvidence(
+                strategy_id=strategy_id.strip() or "unnamed_strategy",
+                total_trades=optional_int(total_trades_raw),
+                oos_trades=optional_int(oos_trades_raw),
+                oos_return_pct=optional_float(oos_return_raw),
+                max_drawdown_pct=optional_float(drawdown_raw),
+                fees_slippage_included=costs_included,
+                walk_forward_fold_returns_pct=folds,
+                parameter_sensitivity_degradation_pct=optional_float(sensitivity_raw),
+                out_of_sample_evaluated=oos_done,
+                evidence_reference=evidence_ref.strip() or None,
+            )
+            report = evaluate_strategy(evidence)
+            st.session_state["research_strategy_validation_report"] = report.as_dict()
+        except (ValueError, TypeError) as exc:
+            st.error(f"Validation input error: {exc}")
+    report = st.session_state.get("research_strategy_validation_report")
+    if report:
+        status = report["status"]
+        if status == ValidationStatus.ELIGIBLE.value:
+            st.success(f"{status}: all configured checks passed. This is a research gate, not a profit guarantee.")
+        elif status == ValidationStatus.REJECTED.value:
+            st.error(f"{status}: one or more measured checks failed. Do not advance this strategy.")
+        else:
+            st.warning(f"{status}: required evidence is missing; do not advance this strategy.")
+        st.dataframe(report["checks"], width="stretch", hide_index=True)
+        st.caption("Assessment uses submitted evidence and is not independently verified by this form.")

@@ -1,7 +1,7 @@
 """User-facing disclosures shared by every analytical module."""
 
 EDUCATIONAL_DISCLAIMER = (
-    "Educational Disclaimer: This tool provides educational and analytical "
+    "Educational tool. Not investment advice. This tool provides educational and analytical "
     "information only. It is not investment advice, a recommendation, research "
     "report, or a solicitation to buy, sell, or hold any security. Historical "
     "performance does not guarantee future results. Please conduct your own "
